@@ -1,0 +1,25 @@
+{
+  "name": "audio-transcriber-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsc -w -p tsconfig.electron.json\" \"wait-on http://localhost:5173 && electron dist-electron/main.js\"",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "preview": "vite preview",
+    "lint": "echo 'No linter configured'"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.2",
+    "concurrently": "^9.0.1",
+    "electron": "^31.1.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.8",
+    "wait-on": "^7.2.0"
+  }
+}
