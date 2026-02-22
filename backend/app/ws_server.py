@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Set
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+from websockets.server import ServerConnection
 
 
 @dataclass
@@ -20,7 +20,7 @@ class WebSocketHub:
         self.host = host
         self.port = port
         self._handler = handler
-        self._clients: Set[WebSocketServerProtocol] = set()
+        self._clients: Set[ServerConnection] = set()
         self._server = None
 
     async def start(self) -> None:
@@ -36,12 +36,16 @@ class WebSocketHub:
         if not self._clients:
             return
         message = json.dumps({"type": msg_type, **payload})
-        await asyncio.gather(
-            *[client.send(message) for client in list(self._clients) if not client.closed],
+        clients = list(self._clients)
+        results = await asyncio.gather(
+            *[client.send(message) for client in clients],
             return_exceptions=True,
         )
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                self._clients.discard(client)
 
-    async def _client_handler(self, websocket: WebSocketServerProtocol):
+    async def _client_handler(self, websocket: ServerConnection):
         self._clients.add(websocket)
         try:
             async for message in websocket:

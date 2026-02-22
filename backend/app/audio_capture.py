@@ -4,13 +4,14 @@ import asyncio
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 @dataclass
 class AudioSourceInfo:
     default_sink: Optional[str]
     default_monitor: Optional[str]
+    preferred_monitor: Optional[str]
     monitor_sources: List[str]
 
 
@@ -47,13 +48,87 @@ def list_monitor_sources() -> List[str]:
     return sources
 
 
+def _list_sinks_by_index() -> Dict[str, str]:
+    try:
+        output = _run_command(["pactl", "list", "short", "sinks"])
+    except Exception:
+        return {}
+    sinks: Dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            sinks[parts[0].strip()] = parts[1].strip()
+    return sinks
+
+
+def _extract_prop_value(line: str) -> Optional[str]:
+    if "=" not in line:
+        return None
+    _, value = line.split("=", 1)
+    value = value.strip().strip('"')
+    return value or None
+
+
+def get_active_browser_sink() -> Optional[str]:
+    try:
+        output = _run_command(["pactl", "list", "sink-inputs"])
+    except Exception:
+        return None
+
+    sinks_by_index = _list_sinks_by_index()
+    browser_hints = ("firefox", "chrome", "chromium", "brave", "edge", "youtube")
+
+    current_sink: Optional[str] = None
+    context_tokens: List[str] = []
+
+    def pick_from_current() -> Optional[str]:
+        if not current_sink:
+            return None
+        context = " ".join(context_tokens).lower()
+        if any(hint in context for hint in browser_hints):
+            return sinks_by_index.get(current_sink)
+        return None
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Sink Input #"):
+            sink_name = pick_from_current()
+            if sink_name:
+                return sink_name
+            current_sink = None
+            context_tokens = []
+            continue
+        if line.startswith("Sink:"):
+            current_sink = line.split(":", 1)[1].strip()
+            continue
+        if (
+            "application.name" in line
+            or "application.process.binary" in line
+            or "media.name" in line
+            or "media.title" in line
+        ):
+            value = _extract_prop_value(line)
+            if value:
+                context_tokens.append(value)
+
+    return pick_from_current()
+
+
 def discover_audio_sources() -> AudioSourceInfo:
     default_sink = get_default_sink()
     default_monitor = f"{default_sink}.monitor" if default_sink else None
     monitor_sources = list_monitor_sources()
+    browser_sink = get_active_browser_sink()
+    browser_monitor = f"{browser_sink}.monitor" if browser_sink else None
+    preferred_monitor = browser_monitor if browser_monitor in monitor_sources else None
+    if not preferred_monitor and default_monitor in monitor_sources:
+        preferred_monitor = default_monitor
+    if not preferred_monitor and monitor_sources:
+        preferred_monitor = monitor_sources[0]
     return AudioSourceInfo(
         default_sink=default_sink,
         default_monitor=default_monitor,
+        preferred_monitor=preferred_monitor,
         monitor_sources=monitor_sources,
     )
 

@@ -33,6 +33,11 @@ body {
   animation: fadeIn 0.8s ease;
 }
 
+.page-tabs {
+  display: flex;
+  gap: 8px;
+}
+
 .prompt-bar {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -60,6 +65,34 @@ body {
   font-weight: 600;
 }
 
+.meter-wrap {
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meter-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: #efe7d8;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f9d69 0%, #d7a735 65%, #d9763d 100%);
+  transition: width 0.1s ease-out;
+}
+
+.meter-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .select-wrap,
 .input-wrap {
   display: flex;
@@ -75,13 +108,19 @@ label {
 }
 
 select,
-input {
+input,
+textarea {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
   font-size: 0.95rem;
   min-width: 200px;
   font-family: inherit;
+}
+
+textarea.custom-instruction {
+  min-width: 280px;
+  resize: vertical;
 }
 
 button {
@@ -116,7 +155,7 @@ button:disabled {
 
 .content {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 24px;
 }
 
@@ -150,6 +189,13 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.transcript-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .transcript-body {
   margin-top: 14px;
   background: var(--bg-accent);
@@ -175,6 +221,7 @@ button:disabled {
   font-size: 0.75rem;
   letter-spacing: 0.14em;
   color: var(--primary-dark);
+  user-select: none;
 }
 
 .segment {
@@ -186,6 +233,19 @@ button:disabled {
   animation: fadeIn 0.4s ease;
 }
 
+.segment.live-segment {
+  background: #fff4e1;
+  border: 1px dashed var(--primary);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.segment.live-segment .time {
+  color: var(--primary-dark);
+  font-weight: 700;
+}
+
 .segment:last-child {
   border-bottom: none;
 }
@@ -194,6 +254,7 @@ button:disabled {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
   color: var(--muted);
+  user-select: none;
 }
 
 .segment .text {
@@ -207,6 +268,127 @@ button:disabled {
   padding: 16px;
   flex: 1;
   overflow-y: auto;
+}
+
+.response-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.querying-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #fbf1df;
+  color: var(--primary-dark);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+
+.screenshot-preview {
+  position: relative;
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.screenshot-preview img {
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(26, 26, 26, 0.08);
+  display: block;
+}
+
+button.ghost.danger {
+  border-color: #e3b0a9;
+  color: #9f3f33;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+button.overlay-trash {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+.settings-body {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle-row input {
+  min-width: auto;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.settings-table th,
+.settings-table td {
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.settings-table.compact th,
+.settings-table.compact td {
+  padding: 6px 8px;
+}
+
+.model-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.model-checklist label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.9rem;
+}
+
+.model-checklist input {
+  min-width: auto;
+}
+
+.small-input input {
+  max-width: 140px;
 }
 
 .output-body pre {

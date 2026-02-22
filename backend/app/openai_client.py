@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from time import perf_counter
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -11,6 +12,12 @@ class PresetPrompt:
     id: str
     label: str
     instruction: str
+
+
+@dataclass(frozen=True)
+class QueryResult:
+    text: str
+    latency_ms: float
 
 
 PRESET_PROMPTS: List[PresetPrompt] = [
@@ -47,7 +54,7 @@ def preset_by_id(preset_id: str) -> Optional[PresetPrompt]:
 class OpenAIClient:
     def __init__(self, api_key: str, model: str, timeout_seconds: float = 30.0) -> None:
         self.api_key = api_key
-        self.model = model
+        self.default_model = model
         self._client = httpx.AsyncClient(
             base_url="https://api.openai.com/v1",
             timeout=timeout_seconds,
@@ -62,17 +69,68 @@ class OpenAIClient:
         instruction: str,
         selected_text: str,
         context_text: str,
-    ) -> str:
+        model: Optional[str] = None,
+        screenshot_data_url: Optional[str] = None,
+    ) -> QueryResult:
         prompt = self._build_prompt(selected_text, context_text)
+        if screenshot_data_url:
+            input_payload = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": screenshot_data_url},
+                    ],
+                }
+            ]
+        else:
+            input_payload = prompt
         payload = {
-            "model": self.model,
+            "model": model or self.default_model,
             "instructions": instruction,
-            "input": prompt,
+            "input": input_payload,
         }
+        started = perf_counter()
         response = await self._client.post("/responses", json=payload)
+        latency_ms = (perf_counter() - started) * 1000.0
         response.raise_for_status()
         data = response.json()
-        return extract_output_text(data) or "(No response text returned.)"
+        return QueryResult(
+            text=extract_output_text(data) or "(No response text returned.)",
+            latency_ms=latency_ms,
+        )
+
+    async def list_models(self) -> List[str]:
+        response = await self._client.get("/models")
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("data", [])
+        ids = [item.get("id", "") for item in items if isinstance(item, dict)]
+        models = sorted(model_id for model_id in ids if model_id)
+        return models
+
+    async def list_model_details(self) -> List[Dict[str, Any]]:
+        response = await self._client.get("/models")
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("data", [])
+        details: List[Dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not model_id:
+                continue
+            details.append(
+                {
+                    "id": str(model_id),
+                    "object": str(item.get("object", "model")),
+                    "created": item.get("created"),
+                    "owned_by": str(item.get("owned_by", "")),
+                }
+            )
+        details.sort(key=lambda row: row["id"])
+        return details
 
     @staticmethod
     def _build_prompt(selected_text: str, context_text: str) -> str:

@@ -36,6 +36,7 @@ npm run dev
 ## Audio Setup (Ubuntu)
 - Requires PulseAudio or PipeWire (with Pulse shim).
 - The backend resolves the default monitor source using `pactl info`.
+- If input routing is wrong, install and open `pavucontrol` (`sudo apt install -y pavucontrol`), then in the **Recording** tab set the backend (`python`) input to a `Monitor of ...` source.
 - If no monitor sources are found, select one manually in the UI or send it over WebSocket.
 
 ## WebSocket Messages
@@ -58,5 +59,6 @@ Frontend → Backend:
 
 ## First Run Checklist
 1) Start the backend and confirm it prints `[audio] RMS=...` when system audio is playing.
-2) Launch the frontend and wait for the status pill to show `ready` or `transcribing`.
-3) Select text in the transcript pane, then run a preset prompt.
+2) If RMS stays near zero, open `pavucontrol` and route the backend recording stream to a `Monitor of ...` source.
+3) Launch the frontend and wait for the status pill to show `ready` or `transcribing`.
+4) Select text in the transcript pane, then run a preset prompt.

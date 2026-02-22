@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, desktopCapturer, ipcMain, screen } from 'electron'
 import path from 'path'
 
 const createWindow = () => {
@@ -7,7 +7,7 @@ const createWindow = () => {
     height: 800,
     backgroundColor: '#0f0f0f',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -21,6 +21,20 @@ const createWindow = () => {
     win.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 }
+
+ipcMain.handle('capture-screen', async () => {
+  const primaryDisplay = screen.getPrimaryDisplay()
+  const targetWidth = Math.max(1280, Math.floor(primaryDisplay.size.width * 0.75))
+  const targetHeight = Math.max(720, Math.floor(primaryDisplay.size.height * 0.75))
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: targetWidth, height: targetHeight }
+  })
+  const source = sources[0]
+  if (!source) return null
+  const jpeg = source.thumbnail.toJPEG(72)
+  return `data:image/jpeg;base64,${jpeg.toString('base64')}`
+})
 
 app.whenReady().then(() => {
   createWindow()

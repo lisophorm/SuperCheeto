@@ -73,6 +73,7 @@ class StreamingTranscriber:
         model_name: str,
         device: str,
         compute_type: str,
+        vad_filter: bool,
         partial_window: float,
         partial_interval: float,
         final_window: float,
@@ -85,6 +86,7 @@ class StreamingTranscriber:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
+        self.vad_filter = vad_filter
         self.partial_window = partial_window
         self.partial_interval = partial_interval
         self.final_window = final_window
@@ -105,7 +107,16 @@ class StreamingTranscriber:
         def _load() -> WhisperModel:
             return WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
 
-        self._model = await asyncio.to_thread(_load)
+        try:
+            self._model = await asyncio.to_thread(_load)
+        except Exception:
+            if self.device != "cuda":
+                raise
+            # Fallback to CPU when CUDA isn't available on this host.
+            self.device = "cpu"
+            if self.compute_type == "float16":
+                self.compute_type = "int8"
+            self._model = await asyncio.to_thread(_load)
 
     async def add_audio(self, samples: np.ndarray) -> None:
         async with self._lock:
@@ -174,9 +185,32 @@ class StreamingTranscriber:
 
     def _decode_segments(self, audio: np.ndarray):
         assert self._model is not None
-        segments, _info = self._model.transcribe(
+        try:
+            segments, _info = self._model.transcribe(
+                audio,
+                beam_size=1,
+                vad_filter=self.vad_filter,
+            )
+        except Exception:
+            if self.device != "cuda":
+                raise
+            # Runtime CUDA failures can happen on some drivers/setups. Recover on CPU.
+            self.device = "cpu"
+            if self.compute_type == "float16":
+                self.compute_type = "int8"
+            self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+            segments, _info = self._model.transcribe(
+                audio,
+                beam_size=1,
+                vad_filter=self.vad_filter,
+            )
+        parsed = list(segments)
+        if parsed or not self.vad_filter:
+            return parsed
+        # Fallback for low-volume or compressed system audio where VAD is overly aggressive.
+        segments_no_vad, _info = self._model.transcribe(
             audio,
             beam_size=1,
-            vad_filter=True,
+            vad_filter=False,
         )
-        return list(segments)
+        return list(segments_no_vad)

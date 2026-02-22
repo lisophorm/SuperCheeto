@@ -1,0 +1,10 @@
+# Codex CLI project configuration
+# See: https://github.com/openai/codex-cli (schema may vary by build)
+approval_policy: never           # no manual confirmations
+sandbox_mode: workspace-write    # allow writes inside this repo only
+network_access: enabled       # block outbound network unless explicitly allowed
+
+# Optional: tweak runtime behavior (uncomment to use)
+# telemetry: minimal
+# logging: info
+# timeout_seconds: 600

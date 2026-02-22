@@ -2,7 +2,14 @@ type WSHandlers = {
   onStatus: (payload: { state: string; details?: string }) => void
   onLive: (payload: { text: string; t: number }) => void
   onSegment: (payload: { segment: any }) => void
-  onQueryResponse: (payload: { requestId?: string; text: string }) => void
+  onAudioLevel: (payload: { rms: number; level: number; t: number }) => void
+  onAudioSources: (payload: { sources: string[]; defaultSource?: string; selectedSource?: string }) => void
+  onModelsList: (payload: { models: string[]; selectedModel?: string }) => void
+  onModelsDetails: (payload: { models: Array<{ id: string; object: string; created: number | null; owned_by: string }> }) => void
+  onQueryState: (payload: { running: boolean; requestId?: string }) => void
+  onQueryResponse: (payload: { requestId?: string; text: string; latencyMs?: number; model?: string; screenshotUsed?: boolean }) => void
+  onBenchmarkProgress: (payload: { benchmarkId?: string; completed: number; total: number }) => void
+  onBenchmarkComplete: (payload: { benchmarkId?: string; results: any[] }) => void
   onError: (payload: { message: string }) => void
 }
 
@@ -43,8 +50,29 @@ export class WSClient {
           case 'transcript_segment':
             this.handlers.onSegment(data)
             break
+          case 'audio_level':
+            this.handlers.onAudioLevel(data)
+            break
+          case 'audio_sources':
+            this.handlers.onAudioSources(data)
+            break
+          case 'models_list':
+            this.handlers.onModelsList(data)
+            break
+          case 'models_details':
+            this.handlers.onModelsDetails(data)
+            break
+          case 'query_state':
+            this.handlers.onQueryState(data)
+            break
           case 'query_response':
             this.handlers.onQueryResponse(data)
+            break
+          case 'benchmark_progress':
+            this.handlers.onBenchmarkProgress(data)
+            break
+          case 'benchmark_complete':
+            this.handlers.onBenchmarkComplete(data)
             break
           case 'error':
             this.handlers.onError(data)
