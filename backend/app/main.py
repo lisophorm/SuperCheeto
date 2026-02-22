@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass
-from statistics import mean
 from pathlib import Path
+from statistics import mean
+from time import time
 from typing import Optional
 
 import numpy as np
 from dotenv import load_dotenv
 
 from .audio_capture import AudioCapture, discover_audio_sources
+from .benchmark_harness import BENCHMARK_HARNESS_PROMPT, build_benchmark_case_input
 from .openai_client import OpenAIClient, preset_by_id
 from .settings import Settings
 from .stt import Segment, StreamingTranscriber
@@ -295,11 +298,64 @@ class AppController:
             },
         )
 
+    @staticmethod
+    def _normalize_benchmark_tests(data: dict) -> list[dict]:
+        raw_tests = data.get("tests")
+        normalized: list[dict] = []
+        if isinstance(raw_tests, list):
+            for index, item in enumerate(raw_tests, start=1):
+                if not isinstance(item, dict):
+                    continue
+                test_id = str(item.get("testId") or f"test_{index}").strip()
+                user_prompt = str(item.get("userPrompt") or "").strip()
+                image_ref = str(item.get("imageRef") or "").strip() or None
+                image_data_url = str(item.get("imageDataUrl") or "").strip() or None
+                if image_data_url and not image_data_url.startswith("data:image/"):
+                    image_data_url = None
+                if not user_prompt:
+                    continue
+                normalized.append(
+                    {
+                        "testId": test_id,
+                        "userPrompt": user_prompt,
+                        "imageRef": image_ref,
+                        "imageDataUrl": image_data_url,
+                    }
+                )
+
+        # Backward compatibility for the old single-input benchmark payload.
+        if not normalized:
+            selected_text = str(data.get("selectedText") or "").strip()
+            if selected_text:
+                normalized = [
+                    {
+                        "testId": "test_1",
+                        "userPrompt": selected_text,
+                        "imageRef": None,
+                        "imageDataUrl": None,
+                    }
+                ]
+        if not normalized:
+            return []
+
+        # Ensure unique test ids in case callers submit duplicates.
+        seen_ids: set[str] = set()
+        for test in normalized:
+            base_id = test["testId"]
+            candidate = base_id
+            suffix = 2
+            while candidate in seen_ids:
+                candidate = f"{base_id}_{suffix}"
+                suffix += 1
+            test["testId"] = candidate
+            seen_ids.add(candidate)
+        return normalized
+
     async def run_benchmark(self, data: dict) -> None:
         benchmark_id = str(data.get("benchmarkId") or "")
         models = [str(model).strip() for model in data.get("models", []) if str(model).strip()]
-        instruction = str(data.get("instruction") or "").strip()
-        selected_text = str(data.get("selectedText") or "").strip()
+        instruction = str(data.get("instruction") or "").strip() or BENCHMARK_HARNESS_PROMPT
+        tests = self._normalize_benchmark_tests(data)
         repeats_raw = data.get("repeats", 1)
         try:
             repeats = int(repeats_raw)
@@ -316,8 +372,8 @@ class AppController:
         if not instruction:
             await self.hub.broadcast("error", {"message": "Benchmark instruction is required."})
             return
-        if not selected_text:
-            await self.hub.broadcast("error", {"message": "Benchmark input text is required."})
+        if not tests:
+            await self.hub.broadcast("error", {"message": "At least one benchmark test is required."})
             return
 
         api_key = os.getenv("OPENAI_API_KEY")
@@ -331,62 +387,151 @@ class AppController:
                 timeout_seconds=self.settings.openai_timeout_seconds,
             )
 
-        total = len(models) * repeats
+        total = len(tests) * len(models) * repeats
         completed = 0
-        rows: list[dict] = []
-        for model in models:
-            latencies: list[float] = []
-            failure_count = 0
-            for _ in range(repeats):
-                try:
-                    result = await self._openai_client.run_query(
-                        instruction=instruction,
-                        selected_text=selected_text,
-                        context_text="",
-                        model=model,
-                        screenshot_data_url=None,
-                    )
-                    latencies.append(result.latency_ms)
-                except Exception:
-                    failure_count += 1
-                completed += 1
-                await self.hub.broadcast(
-                    "benchmark_progress",
+        success_count = 0
+        failure_count = 0
+        aggregate: dict[tuple[str, str], dict] = {}
+        attempts: list[dict] = []
+
+        for test in tests:
+            test_id = test["testId"]
+            user_prompt = test["userPrompt"]
+            image_data_url = test["imageDataUrl"]
+            image_ref = test["imageRef"]
+            for model in models:
+                key = (test_id, model)
+                row = aggregate.setdefault(
+                    key,
                     {
-                        "benchmarkId": benchmark_id,
-                        "completed": completed,
-                        "total": total,
-                    },
-                )
-            if latencies:
-                rows.append(
-                    {
-                        "model": model,
-                        "runs": len(latencies),
-                        "failures": failure_count,
-                        "avgLatencyMs": mean(latencies),
-                        "minLatencyMs": min(latencies),
-                        "maxLatencyMs": max(latencies),
-                    }
-                )
-            else:
-                rows.append(
-                    {
+                        "testId": test_id,
                         "model": model,
                         "runs": 0,
-                        "failures": failure_count,
-                        "avgLatencyMs": None,
-                        "minLatencyMs": None,
-                        "maxLatencyMs": None,
-                    }
+                        "failures": 0,
+                        "jsonValidRuns": 0,
+                        "latencies": [],
+                    },
                 )
+                for run_index in range(1, repeats + 1):
+                    try:
+                        selected_text = build_benchmark_case_input(
+                            test_id=test_id,
+                            user_prompt=user_prompt,
+                            image_ref_id=image_ref if image_data_url else None,
+                        )
+                        result = await self._openai_client.run_query(
+                            instruction=instruction,
+                            selected_text=selected_text,
+                            context_text="",
+                            model=model,
+                            screenshot_data_url=image_data_url,
+                        )
+                        row["runs"] += 1
+                        row["latencies"].append(result.latency_ms)
+                        response_text = result.text.strip()
+                        json_valid = False
+                        parse_error = None
+                        try:
+                            parsed = json.loads(response_text)
+                            json_valid = isinstance(parsed, dict)
+                            if not json_valid:
+                                parse_error = "Response was valid JSON but not an object."
+                        except json.JSONDecodeError as exc:
+                            parse_error = f"{exc.msg} (pos {exc.pos})"
+                        if json_valid:
+                            row["jsonValidRuns"] += 1
+                        attempts.append(
+                            {
+                                "testId": test_id,
+                                "model": model,
+                                "run": run_index,
+                                "success": True,
+                                "jsonValid": json_valid,
+                                "latencyMs": result.latency_ms,
+                                "responsePreview": response_text[:500],
+                                "error": parse_error,
+                                "imageRef": image_ref,
+                            }
+                        )
+                    except Exception as exc:
+                        row["failures"] += 1
+                        failure_count += 1
+                        attempts.append(
+                            {
+                                "testId": test_id,
+                                "model": model,
+                                "run": run_index,
+                                "success": False,
+                                "jsonValid": False,
+                                "latencyMs": None,
+                                "responsePreview": "",
+                                "error": str(exc),
+                                "imageRef": image_ref,
+                            }
+                        )
+                    else:
+                        success_count += 1
+                    await self.hub.broadcast(
+                        "benchmark_log",
+                        {
+                            "benchmarkId": benchmark_id,
+                            **attempts[-1],
+                        },
+                    )
+                    completed += 1
+                    await self.hub.broadcast(
+                        "benchmark_progress",
+                        {
+                            "benchmarkId": benchmark_id,
+                            "completed": completed,
+                            "total": total,
+                            "testId": test_id,
+                            "model": model,
+                            "run": run_index,
+                            "successes": success_count,
+                            "failures": failure_count,
+                        },
+                    )
 
-        rows.sort(key=lambda row: row["avgLatencyMs"] if row["avgLatencyMs"] is not None else float("inf"))
+        rows: list[dict] = []
+        for row in aggregate.values():
+            latencies = row["latencies"]
+            rows.append(
+                {
+                    "testId": row["testId"],
+                    "model": row["model"],
+                    "runs": row["runs"],
+                    "failures": row["failures"],
+                    "jsonValidRuns": row["jsonValidRuns"],
+                    "avgLatencyMs": mean(latencies) if latencies else None,
+                    "minLatencyMs": min(latencies) if latencies else None,
+                    "maxLatencyMs": max(latencies) if latencies else None,
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                row["testId"],
+                row["avgLatencyMs"] if row["avgLatencyMs"] is not None else float("inf"),
+            )
+        )
         await self.hub.broadcast(
             "benchmark_complete",
             {
                 "benchmarkId": benchmark_id,
+                "createdAt": int(time()),
+                "instruction": instruction,
+                "tests": [
+                    {
+                        "testId": test["testId"],
+                        "userPrompt": test["userPrompt"],
+                        "imageRef": test["imageRef"],
+                        "hasImage": bool(test["imageDataUrl"]),
+                    }
+                    for test in tests
+                ],
                 "results": rows,
+                "attempts": attempts,
             },
         )
 

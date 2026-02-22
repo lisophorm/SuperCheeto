@@ -1,9 +1,19 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import PromptBar from './components/PromptBar'
 import TranscriptPane from './components/TranscriptPane'
 import OutputPane from './components/OutputPane'
 import SettingsPage from './components/SettingsPage'
-import { BenchmarkResult, OpenAIModelInfo, Preset, SelectionRange, TranscriptSegment } from './types'
+import {
+  BenchmarkCaseInput,
+  BenchmarkImageAsset,
+  BenchmarkLiveLog,
+  BenchmarkProgress,
+  BenchmarkRun,
+  OpenAIModelInfo,
+  Preset,
+  SelectionRange,
+  TranscriptSegment
+} from './types'
 import { WSClient } from './ws'
 
 const PRESETS: Preset[] = [
@@ -33,6 +43,37 @@ const parseMaxRows = () => {
   const raw = Number(import.meta.env.VITE_MAX_ROWS)
   if (!Number.isFinite(raw) || raw <= 0) return 30
   return Math.floor(raw)
+}
+
+const BENCHMARK_HISTORY_STORAGE_KEY = 'benchmark-history.v1'
+const BENCHMARK_IMAGES_STORAGE_KEY = 'benchmark-images.v1'
+const MAX_BENCHMARK_HISTORY = 40
+const MAX_BENCHMARK_LIVE_LOGS = 500
+
+const loadBenchmarkHistory = (): BenchmarkRun[] => {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(BENCHMARK_HISTORY_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed as BenchmarkRun[]
+  } catch {
+    return []
+  }
+}
+
+const loadBenchmarkImages = (): BenchmarkImageAsset[] => {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(BENCHMARK_IMAGES_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed as BenchmarkImageAsset[]
+  } catch {
+    return []
+  }
 }
 
 type LiveRow = {
@@ -66,9 +107,13 @@ const App: React.FC = () => {
   const [lastResponseModel, setLastResponseModel] = useState<string>('')
   const [lastScreenshotUsed, setLastScreenshotUsed] = useState(false)
   const [benchmarkRunning, setBenchmarkRunning] = useState(false)
-  const [benchmarkProgress, setBenchmarkProgress] = useState<{ completed: number; total: number } | null>(null)
-  const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkResult[]>([])
+  const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress | null>(null)
+  const [activeBenchmarkId, setActiveBenchmarkId] = useState<string | null>(null)
+  const [benchmarkLiveLogs, setBenchmarkLiveLogs] = useState<BenchmarkLiveLog[]>([])
+  const [benchmarkHistory, setBenchmarkHistory] = useState<BenchmarkRun[]>(() => loadBenchmarkHistory())
+  const [benchmarkImages, setBenchmarkImages] = useState<BenchmarkImageAsset[]>(() => loadBenchmarkImages())
   const [selectedPresetId, setSelectedPresetId] = useState(PRESETS[0].id)
+  const activeBenchmarkIdRef = useRef<string | null>(null)
   const maxRows = parseMaxRows()
 
   const client = useMemo(() => {
@@ -144,16 +189,57 @@ const App: React.FC = () => {
       },
       onBenchmarkProgress: (payload) => {
         setBenchmarkRunning(true)
-        setBenchmarkProgress({ completed: payload.completed, total: payload.total })
+        setBenchmarkProgress({
+          completed: payload.completed,
+          total: payload.total,
+          testId: payload.testId,
+          model: payload.model,
+          run: payload.run,
+          successes: payload.successes,
+          failures: payload.failures
+        })
+      },
+      onBenchmarkLog: (payload) => {
+        const currentBenchmarkId = activeBenchmarkIdRef.current
+        const benchmarkId = payload.benchmarkId || currentBenchmarkId
+        if (!benchmarkId || (currentBenchmarkId && benchmarkId !== currentBenchmarkId)) {
+          return
+        }
+        const row: BenchmarkLiveLog = {
+          benchmarkId,
+          testId: payload.testId || '',
+          model: payload.model || '',
+          run: payload.run || 0,
+          success: Boolean(payload.success),
+          jsonValid: Boolean(payload.jsonValid),
+          latencyMs: typeof payload.latencyMs === 'number' ? payload.latencyMs : null,
+          responsePreview: payload.responsePreview || '',
+          error: payload.error || null,
+          imageRef: payload.imageRef || null
+        }
+        setBenchmarkLiveLogs((prev) => [row, ...prev].slice(0, MAX_BENCHMARK_LIVE_LOGS))
       },
       onBenchmarkComplete: (payload) => {
         setBenchmarkRunning(false)
         setBenchmarkProgress(null)
-        setBenchmarkResults(payload.results || [])
+        setActiveBenchmarkId(null)
+        activeBenchmarkIdRef.current = null
+        const run: BenchmarkRun = {
+          benchmarkId: payload.benchmarkId || crypto.randomUUID(),
+          createdAt: typeof payload.createdAt === 'number' ? payload.createdAt : Math.floor(Date.now() / 1000),
+          instruction: payload.instruction || '',
+          tests: Array.isArray(payload.tests) ? payload.tests : [],
+          results: payload.results || [],
+          attempts: Array.isArray(payload.attempts) ? payload.attempts : []
+        }
+        setBenchmarkHistory((prev) => [run, ...prev].slice(0, MAX_BENCHMARK_HISTORY))
       },
       onError: (payload) => {
         setIsQuerying(false)
         setBenchmarkRunning(false)
+        setBenchmarkProgress(null)
+        setActiveBenchmarkId(null)
+        activeBenchmarkIdRef.current = null
         setStatus(`error: ${payload.message}`)
       }
     })
@@ -162,6 +248,16 @@ const App: React.FC = () => {
   useEffect(() => {
     client.connect()
   }, [client])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(BENCHMARK_HISTORY_STORAGE_KEY, JSON.stringify(benchmarkHistory))
+  }, [benchmarkHistory])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(BENCHMARK_IMAGES_STORAGE_KEY, JSON.stringify(benchmarkImages))
+  }, [benchmarkImages])
 
   const canRun = selectedText.trim().length > 0
 
@@ -235,17 +331,26 @@ const App: React.FC = () => {
     }
   }
 
-  const runBenchmark = (payload: { models: string[]; instruction: string; selectedText: string; repeats: number }) => {
+  const runBenchmark = (payload: { models: string[]; instruction: string; tests: BenchmarkCaseInput[]; repeats: number }) => {
     const benchmarkId = crypto.randomUUID()
+    const imageByRef = new Map(benchmarkImages.map((image) => [image.refId, image.dataUrl]))
+    const tests = payload.tests.map((test) => ({
+      testId: test.testId,
+      userPrompt: test.userPrompt,
+      imageRef: test.imageRef || null,
+      imageDataUrl: test.imageRef ? imageByRef.get(test.imageRef) || null : null
+    }))
     setBenchmarkRunning(true)
-    setBenchmarkProgress({ completed: 0, total: payload.models.length * payload.repeats })
-    setBenchmarkResults([])
+    setActiveBenchmarkId(benchmarkId)
+    activeBenchmarkIdRef.current = benchmarkId
+    setBenchmarkLiveLogs([])
+    setBenchmarkProgress({ completed: 0, total: payload.models.length * payload.repeats * tests.length })
     client.send({
       type: 'run_benchmark',
       benchmarkId,
       models: payload.models,
       instruction: payload.instruction,
-      selectedText: payload.selectedText,
+      tests,
       repeats: payload.repeats
     })
   }
@@ -327,7 +432,19 @@ const App: React.FC = () => {
           onRunBenchmark={runBenchmark}
           benchmarkRunning={benchmarkRunning}
           benchmarkProgress={benchmarkProgress}
-          benchmarkResults={benchmarkResults}
+          benchmarkLiveLogs={benchmarkLiveLogs}
+          benchmarkHistory={benchmarkHistory}
+          benchmarkImages={benchmarkImages}
+          onUpsertBenchmarkImage={(image) => {
+            setBenchmarkImages((prev) => {
+              const next = prev.filter((item) => item.refId !== image.refId)
+              return [image, ...next].sort((a, b) => a.refId.localeCompare(b.refId))
+            })
+          }}
+          onDeleteBenchmarkImage={(refId) =>
+            setBenchmarkImages((prev) => prev.filter((item) => item.refId !== refId))
+          }
+          onClearBenchmarkHistory={() => setBenchmarkHistory([])}
         />
       )}
     </div>

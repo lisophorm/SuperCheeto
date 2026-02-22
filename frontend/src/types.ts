@@ -20,12 +20,70 @@ export type OpenAIModelInfo = {
 }
 
 export type BenchmarkResult = {
+  testId: string
   model: string
   runs: number
   failures: number
+  jsonValidRuns: number
   avgLatencyMs: number | null
   minLatencyMs: number | null
   maxLatencyMs: number | null
+}
+
+export type BenchmarkCaseInput = {
+  testId: string
+  userPrompt: string
+  imageRef?: string | null
+  imageDataUrl?: string | null
+}
+
+export type BenchmarkCaseInfo = {
+  testId: string
+  userPrompt: string
+  imageRef?: string | null
+  hasImage: boolean
+}
+
+export type BenchmarkAttempt = {
+  testId: string
+  model: string
+  run: number
+  success: boolean
+  jsonValid: boolean
+  latencyMs: number | null
+  responsePreview: string
+  error: string | null
+  imageRef?: string | null
+}
+
+export type BenchmarkRun = {
+  benchmarkId: string
+  createdAt: number
+  instruction: string
+  tests: BenchmarkCaseInfo[]
+  results: BenchmarkResult[]
+  attempts: BenchmarkAttempt[]
+}
+
+export type BenchmarkLiveLog = BenchmarkAttempt & {
+  benchmarkId: string
+}
+
+export type BenchmarkProgress = {
+  completed: number
+  total: number
+  testId?: string
+  model?: string
+  run?: number
+  successes?: number
+  failures?: number
+}
+
+export type BenchmarkImageAsset = {
+  refId: string
+  dataUrl: string
+  filename: string
+  createdAt: number
 }
 
 export type QueryRequest = {

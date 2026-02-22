@@ -15,6 +15,30 @@ docs/      # Prompts and design briefs
 ```
 
 ## Quick Start
+### Launch both services (recommended)
+```bash
+./scripts/dev.sh start
+```
+
+Stop both:
+```bash
+./scripts/dev.sh stop
+```
+
+Other helpers:
+```bash
+./scripts/dev.sh status
+./scripts/dev.sh logs
+./scripts/dev.sh restart
+```
+
+Notes:
+- `./scripts/dev.sh stop` also cleans up lingering backend listeners on `127.0.0.1:${BACKEND_WS_PORT:-8765}` when no PID file is present.
+- To run backend on a non-default WebSocket port with the launcher, set `BACKEND_WS_PORT` and `WS_PORT` together, for example:
+  ```bash
+  BACKEND_WS_PORT=8766 WS_PORT=8766 ./scripts/dev.sh start
+  ```
+
 ### Backend
 ```bash
 cd backend
@@ -56,6 +80,14 @@ Frontend → Backend:
 ## OpenAI
 - Set `OPENAI_API_KEY` before running.
 - Default model: `gpt-4o` (override with `OPENAI_MODEL`).
+
+## Benchmarking (Settings page)
+- Manage tests with simple CRUD in Settings (create, edit, delete).
+- Each test uses a dedicated 5-row prompt textarea.
+- Upload benchmark images with a reference id (for example `IMAGE_1`) and attach that ref to tests.
+- A single benchmark run executes all combinations of `tests x selected models x repeats`.
+- Benchmark history is retained in the app (local browser storage) so new runs do not overwrite prior results.
+- Settings shows a "Latest Result Per Model" summary using the newest available benchmark data for each model.
 
 ## First Run Checklist
 1) Start the backend and confirm it prints `[audio] RMS=...` when system audio is playing.

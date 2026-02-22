@@ -8,8 +8,36 @@ type WSHandlers = {
   onModelsDetails: (payload: { models: Array<{ id: string; object: string; created: number | null; owned_by: string }> }) => void
   onQueryState: (payload: { running: boolean; requestId?: string }) => void
   onQueryResponse: (payload: { requestId?: string; text: string; latencyMs?: number; model?: string; screenshotUsed?: boolean }) => void
-  onBenchmarkProgress: (payload: { benchmarkId?: string; completed: number; total: number }) => void
-  onBenchmarkComplete: (payload: { benchmarkId?: string; results: any[] }) => void
+  onBenchmarkProgress: (payload: {
+    benchmarkId?: string
+    completed: number
+    total: number
+    testId?: string
+    model?: string
+    run?: number
+    successes?: number
+    failures?: number
+  }) => void
+  onBenchmarkLog: (payload: {
+    benchmarkId?: string
+    testId?: string
+    model?: string
+    run?: number
+    success?: boolean
+    jsonValid?: boolean
+    latencyMs?: number | null
+    responsePreview?: string
+    error?: string | null
+    imageRef?: string | null
+  }) => void
+  onBenchmarkComplete: (payload: {
+    benchmarkId?: string
+    createdAt?: number
+    instruction?: string
+    tests?: any[]
+    results: any[]
+    attempts?: any[]
+  }) => void
   onError: (payload: { message: string }) => void
 }
 
@@ -70,6 +98,9 @@ export class WSClient {
             break
           case 'benchmark_progress':
             this.handlers.onBenchmarkProgress(data)
+            break
+          case 'benchmark_log':
+            this.handlers.onBenchmarkLog(data)
             break
           case 'benchmark_complete':
             this.handlers.onBenchmarkComplete(data)

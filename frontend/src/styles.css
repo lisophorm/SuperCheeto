@@ -391,6 +391,65 @@ button.overlay-trash {
   max-width: 140px;
 }
 
+.benchmark-images,
+.benchmark-tests {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: #fffcf6;
+}
+
+.benchmark-image-upload,
+.benchmark-test-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.benchmark-test-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.benchmark-image-thumb {
+  width: 72px;
+  height: 48px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.benchmark-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.benchmark-history-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.benchmark-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.benchmark-run {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: #fffcf6;
+}
+
+.benchmark-run-meta {
+  margin: 0 0 8px;
+}
+
 .output-body pre {
   margin: 0;
   white-space: pre-wrap;
