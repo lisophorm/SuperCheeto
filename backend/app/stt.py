@@ -16,6 +16,8 @@ class Segment:
     t1: float
     text: str
     is_final: bool = True
+    source_kind: str = "system"
+    source_name: str | None = None
 
 
 class AudioBuffer:
@@ -95,13 +97,20 @@ class StreamingTranscriber:
         self.on_live = on_live
         self.on_segment = on_segment
 
-        self._buffer = AudioBuffer(sample_rate, max_seconds=max(partial_window, final_window) + 5)
+        self._max_buffer_seconds = max(partial_window, final_window) + 5
+        self._buffer = AudioBuffer(sample_rate, max_seconds=self._max_buffer_seconds)
         self._model: Optional[WhisperModel] = None
         self._running = False
         self._segment_id = 0
         self._last_final_time = 0.0
         self._last_live_text = ""
         self._lock = asyncio.Lock()
+
+    def reset_state(self) -> None:
+        self._buffer = AudioBuffer(self.sample_rate, max_seconds=self._max_buffer_seconds)
+        self._segment_id = 0
+        self._last_final_time = 0.0
+        self._last_live_text = ""
 
     async def load_model(self) -> None:
         def _load() -> WhisperModel:
@@ -126,19 +135,21 @@ class StreamingTranscriber:
         if not self._model:
             raise RuntimeError("Whisper model not loaded")
         self._running = True
-        last_partial = 0.0
-        last_final = 0.0
-        loop = asyncio.get_event_loop()
-        while not stop_event.is_set():
-            await asyncio.sleep(0.1)
-            now = loop.time()
-            if now - last_partial >= self.partial_interval:
-                last_partial = now
-                await self._transcribe_partial()
-            if now - last_final >= self.final_interval:
-                last_final = now
-                await self._transcribe_final()
-        self._running = False
+        try:
+            last_partial = 0.0
+            last_final = 0.0
+            loop = asyncio.get_event_loop()
+            while not stop_event.is_set():
+                await asyncio.sleep(0.1)
+                now = loop.time()
+                if now - last_partial >= self.partial_interval:
+                    last_partial = now
+                    await self._transcribe_partial()
+                if now - last_final >= self.final_interval:
+                    last_final = now
+                    await self._transcribe_final()
+        finally:
+            self._running = False
 
     async def _transcribe_partial(self) -> None:
         async with self._lock:

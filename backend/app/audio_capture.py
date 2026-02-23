@@ -10,9 +10,12 @@ from typing import Dict, Iterable, List, Optional
 @dataclass
 class AudioSourceInfo:
     default_sink: Optional[str]
+    default_source: Optional[str]
     default_monitor: Optional[str]
     preferred_monitor: Optional[str]
+    preferred_mic: Optional[str]
     monitor_sources: List[str]
+    mic_sources: List[str]
 
 
 def _run_command(command: List[str]) -> str:
@@ -33,6 +36,17 @@ def get_default_sink() -> Optional[str]:
     return None
 
 
+def get_default_source() -> Optional[str]:
+    try:
+        output = _run_command(["pactl", "info"])
+    except Exception:
+        return None
+    for line in output.splitlines():
+        if line.strip().startswith("Default Source:"):
+            return line.split(":", 1)[1].strip() or None
+    return None
+
+
 def list_monitor_sources() -> List[str]:
     try:
         output = _run_command(["pactl", "list", "short", "sources"])
@@ -45,6 +59,23 @@ def list_monitor_sources() -> List[str]:
             name = parts[1]
             if ".monitor" in name:
                 sources.append(name)
+    return sources
+
+
+def list_mic_sources() -> List[str]:
+    try:
+        output = _run_command(["pactl", "list", "short", "sources"])
+    except Exception:
+        return []
+    sources = []
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        name = parts[1]
+        if ".monitor" in name:
+            continue
+        sources.append(name)
     return sources
 
 
@@ -116,8 +147,10 @@ def get_active_browser_sink() -> Optional[str]:
 
 def discover_audio_sources() -> AudioSourceInfo:
     default_sink = get_default_sink()
+    default_source = get_default_source()
     default_monitor = f"{default_sink}.monitor" if default_sink else None
     monitor_sources = list_monitor_sources()
+    mic_sources = list_mic_sources()
     browser_sink = get_active_browser_sink()
     browser_monitor = f"{browser_sink}.monitor" if browser_sink else None
     preferred_monitor = browser_monitor if browser_monitor in monitor_sources else None
@@ -125,11 +158,17 @@ def discover_audio_sources() -> AudioSourceInfo:
         preferred_monitor = default_monitor
     if not preferred_monitor and monitor_sources:
         preferred_monitor = monitor_sources[0]
+    preferred_mic = default_source if default_source in mic_sources else None
+    if not preferred_mic and mic_sources:
+        preferred_mic = mic_sources[0]
     return AudioSourceInfo(
         default_sink=default_sink,
+        default_source=default_source,
         default_monitor=default_monitor,
         preferred_monitor=preferred_monitor,
+        preferred_mic=preferred_mic,
         monitor_sources=monitor_sources,
+        mic_sources=mic_sources,
     )
 
 
@@ -145,15 +184,18 @@ def _build_parec_command(source_name: Optional[str]) -> List[str]:
     return cmd
 
 
-def _build_pwcat_command() -> List[str]:
-    return ["pw-cat", "--record", "--rate", "16000", "--channels", "1", "--format", "s16le"]
+def _build_pwcat_command(source_name: Optional[str]) -> List[str]:
+    cmd = ["pw-cat", "--record", "--rate", "16000", "--channels", "1", "--format", "s16le"]
+    if source_name:
+        cmd.extend(["--target", source_name])
+    return cmd
 
 
 def _candidate_commands(source_name: Optional[str]) -> Iterable[List[str]]:
     if shutil.which("parec"):
         yield _build_parec_command(source_name)
     if shutil.which("pw-cat"):
-        yield _build_pwcat_command()
+        yield _build_pwcat_command(source_name)
 
 
 class AudioCapture:

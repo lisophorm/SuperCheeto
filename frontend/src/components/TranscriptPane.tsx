@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { TranscriptSegment } from '../types'
+import { AudioStreamKind, TranscriptSegment } from '../types'
 
 type Props = {
   segments: TranscriptSegment[]
   liveText: string
-  liveRows: Array<{ id: number; text: string; t: number }>
+  liveRows: Array<{ id: number; text: string; t: number; sourceKind: AudioStreamKind; sourceName?: string | null }>
   maxRows: number
   onSelectionChange: (text: string, range: { start: number; end: number } | null) => void
   onClear: () => void
@@ -19,10 +19,16 @@ const formatTime = (seconds: number) => {
 const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows, onSelectionChange, onClear }) => {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
-  const orderedSegments = [...segments].reverse()
-  const latestLiveRow = liveRows[0]
-  const olderLiveRows = liveRows.slice(1)
-  const maxBodyHeight = Math.max(280, maxRows * 42 + 72)
+  const orderedSegments = [...segments]
+  const latestLiveRow = liveRows[liveRows.length - 1]
+  const olderLiveRows = latestLiveRow ? liveRows.slice(0, -1) : liveRows
+  // Respect VITE_MAX_ROWS more directly for visible rows + a LIVE row.
+  const rowHeightPx = 22
+  const liveRowHeightPx = 30
+  const chromePx = 28
+  const bodyHeightPx = Math.max(120, maxRows * rowHeightPx + liveRowHeightPx + chromePx)
+  const rowClassForKind = (kind: AudioStreamKind | undefined) => (kind === 'mic' ? 'source-mic' : 'source-system')
+  const rowLabelForKind = (kind: AudioStreamKind | undefined) => (kind === 'mic' ? 'MIC' : 'SYS')
 
   useEffect(() => {
     if (autoScrollPaused) {
@@ -34,21 +40,21 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
       if (selection && !selection.isCollapsed) {
         return
       }
-      container.scrollTop = 0
+      container.scrollTop = container.scrollHeight
     }
-  }, [segments.length, liveText, autoScrollPaused])
+  }, [segments.length, liveRows.length, liveText, autoScrollPaused])
 
-  const scrollToTop = () => {
+  const scrollToLatest = () => {
     const container = containerRef.current
     if (!container) return
-    container.scrollTop = 0
+    container.scrollTop = container.scrollHeight
   }
 
   const findSelectedTimeRange = (selection: Selection) => {
     const container = containerRef.current
     if (!container || selection.rangeCount === 0) return null
     const range = selection.getRangeAt(0)
-    const rows = Array.from(container.querySelectorAll<HTMLElement>('.segment[data-t0][data-t1]'))
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('.transcript-row[data-t0][data-t1]'))
     const intersectingRows = rows.filter((row) => {
       try {
         return range.intersectsNode(row)
@@ -72,11 +78,47 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
     return { start, end }
   }
 
-  const handleSelection = () => {
+  const isSelectionInsideContainer = (selection: Selection) => {
+    const container = containerRef.current
+    if (!container) return false
+    const anchor = selection.anchorNode
+    const focus = selection.focusNode
+    if (!anchor || !focus) return false
+    return container.contains(anchor) && container.contains(focus)
+  }
+
+  const extractSelectionText = (selection: Selection) => {
+    if (selection.rangeCount === 0) {
+      return ''
+    }
+    const range = selection.getRangeAt(0)
+    const fragment = range.cloneContents()
+    const wrapper = document.createElement('div')
+    wrapper.appendChild(fragment)
+    wrapper.querySelectorAll('.time, .label, .source-tag').forEach((element) => element.remove())
+    const cleaned = (wrapper.textContent || '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{2,}/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+    if (cleaned) {
+      return cleaned
+    }
+    return (selection.toString() || '')
+      .replace(/\b\d+:\d{2}\b/g, '')
+      .replace(/\bLIVE\b/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+  }
+
+  const handleSelectionChange = () => {
     const selection = window.getSelection()
-    const text = selection ? selection.toString().trim() : ''
-    if (!selection || selection.rangeCount === 0 || !text) {
-      onSelectionChange('', null)
+    const text = selection ? extractSelectionText(selection) : ''
+    // Sticky selection: keep prior selection unless user explicitly clears it.
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return
+    }
+    if (!text || !isSelectionInsideContainer(selection)) {
       return
     }
     const range = findSelectedTimeRange(selection)
@@ -87,50 +129,82 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
     onSelectionChange(text, null)
   }
 
+  const clearSelection = () => {
+    const selection = window.getSelection()
+    if (selection) {
+      selection.removeAllRanges()
+    }
+    onSelectionChange('', null)
+  }
+
+  useEffect(() => {
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+    }
+  }, [onSelectionChange])
+
   return (
-    <section className="pane transcript" onMouseUp={handleSelection} onKeyUp={handleSelection}>
+    <section className="pane transcript">
       <header>
         <div>
           <h2>Transcript</h2>
-          <p>Selectable, live-updating text from system audio.</p>
+          <p>Selectable, live-updating text from system audio or microphone.</p>
         </div>
         <div className="transcript-actions">
           <button className="ghost" onClick={() => setAutoScrollPaused((prev) => !prev)}>
             {autoScrollPaused ? 'Resume Auto Scroll' : 'Pause Auto Scroll'}
           </button>
-          <button className="ghost" onClick={scrollToTop}>Scroll to Top</button>
+          <button className="ghost" onClick={scrollToLatest}>Scroll to Latest</button>
+          <button className="ghost" onClick={clearSelection}>Clear Selection</button>
           <button className="ghost" onClick={onClear}>Clear</button>
         </div>
       </header>
-      <div className="transcript-body" ref={containerRef} style={{ maxHeight: `${maxBodyHeight}px` }}>
-        {!latestLiveRow ? (
-          <div className="live-line">
-            <span className="label">LIVE</span>
-            <span className="text">{liveText || 'Waiting for audio…'}</span>
-          </div>
-        ) : (
-          <div className="live-line">
-            <span className="label">LIVE</span>
-            <span className="text">{latestLiveRow.text}</span>
-          </div>
-        )}
-        {olderLiveRows.map((row) => (
-          <div className="segment" key={`live-${row.id}`} data-t0={row.t} data-t1={row.t}>
-            <span className="time">{formatTime(row.t)}</span>
-            <span className="text">{row.text}</span>
-          </div>
-        ))}
+      <div
+        className="transcript-body"
+        ref={containerRef}
+        style={{ height: `${bodyHeightPx}px`, maxHeight: `${bodyHeightPx}px` }}
+      >
         {orderedSegments.map((segment, idx) => (
           <div
-            className="segment"
+            className={`segment transcript-row ${rowClassForKind(segment.source_kind)}`}
             key={`seg-${segment.id}-${segment.t0.toFixed(2)}-${segment.t1.toFixed(2)}-${idx}`}
             data-t0={segment.t0}
             data-t1={segment.t1}
           >
             <span className="time">{formatTime(segment.t0)}</span>
+            <span className="source-tag">{rowLabelForKind(segment.source_kind)}</span>
             <span className="text">{segment.text}</span>
           </div>
         ))}
+        {olderLiveRows.map((row) => (
+          <div
+            className={`segment transcript-row ${rowClassForKind(row.sourceKind)}`}
+            key={`live-${row.id}`}
+            data-t0={row.t}
+            data-t1={row.t}
+          >
+            <span className="time">{formatTime(row.t)}</span>
+            <span className="source-tag">{rowLabelForKind(row.sourceKind)}</span>
+            <span className="text">{row.text}</span>
+          </div>
+        ))}
+        {!latestLiveRow ? (
+          <div className="live-line source-system">
+            <span className="label">LIVE</span>
+            <span className="text">{liveText || 'Waiting for audio…'}</span>
+          </div>
+        ) : (
+          <div
+            className={`live-line transcript-row ${rowClassForKind(latestLiveRow.sourceKind)}`}
+            data-t0={latestLiveRow.t}
+            data-t1={latestLiveRow.t}
+          >
+            <span className="label">LIVE</span>
+            <span className="source-tag">{rowLabelForKind(latestLiveRow.sourceKind)}</span>
+            <span className="text">{latestLiveRow.text}</span>
+          </div>
+        )}
       </div>
     </section>
   )

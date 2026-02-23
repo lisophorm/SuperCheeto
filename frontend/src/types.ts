@@ -1,9 +1,13 @@
+export type AudioStreamKind = 'system' | 'mic'
+
 export type TranscriptSegment = {
   id: number
   t0: number
   t1: number
   text: string
   is_final: boolean
+  source_kind?: AudioStreamKind
+  source_name?: string | null
 }
 
 export type Preset = {
@@ -25,9 +29,22 @@ export type BenchmarkResult = {
   runs: number
   failures: number
   jsonValidRuns: number
+  avgFirstTokenMs: number | null
+  avgTtcMs: number | null
+  minTtcMs: number | null
+  maxTtcMs: number | null
   avgLatencyMs: number | null
   minLatencyMs: number | null
   maxLatencyMs: number | null
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCostUsd: number | null
+  costKnownRuns: number
+  avgQualityScore: number | null
+  qualityPassRuns: number
+  imageRuns: number
+  imageWorkedRuns: number
+  aggregateScore: number
 }
 
 export type BenchmarkCaseInput = {
@@ -50,7 +67,18 @@ export type BenchmarkAttempt = {
   run: number
   success: boolean
   jsonValid: boolean
+  timeToFirstTokenMs: number | null
+  ttcMs: number | null
   latencyMs: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  costUsd: number | null
+  qualityScore: number
+  qualityPassed: boolean
+  qualityChecks: Array<{ name: string; passed: boolean; details: string }>
+  imageCapabilityClaim: string | null
+  imageWorked: boolean | null
   responsePreview: string
   error: string | null
   imageRef?: string | null
@@ -93,6 +121,8 @@ export type QueryRequest = {
   selectedText: string
   selectionTimeRange: { start: number; end: number } | null
   model?: string | null
+  includeScreenshot?: boolean
+  screenshotDataUrl?: string | null
 }
 
 export type SelectionRange = { start: number; end: number } | null

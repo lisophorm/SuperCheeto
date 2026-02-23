@@ -26,10 +26,15 @@ class Settings:
     ws_host: str = os.getenv("WS_HOST", "127.0.0.1")
     ws_port: int = int(os.getenv("WS_PORT", "8765"))
     audio_source: str | None = os.getenv("AUDIO_SOURCE")
+    audio_mic_source: str | None = os.getenv("AUDIO_MIC_SOURCE")
+    audio_mode: str = os.getenv("AUDIO_MODE", "system")
 
     sample_rate: int = int(os.getenv("SAMPLE_RATE", "16000"))
     channels: int = int(os.getenv("CHANNELS", "1"))
     chunk_bytes: int = int(os.getenv("CHUNK_BYTES", "1600"))
+    audio_level_interval_seconds: float = float(os.getenv("AUDIO_LEVEL_INTERVAL", "0.04"))
+    audio_level_rms_reference: float = float(os.getenv("AUDIO_LEVEL_RMS_REF", "0.06"))
+    audio_level_peak_reference: float = float(os.getenv("AUDIO_LEVEL_PEAK_REF", "0.22"))
 
     stt_model: str = os.getenv("STT_MODEL", "tiny")
     stt_device: str = os.getenv("STT_DEVICE", "cuda")

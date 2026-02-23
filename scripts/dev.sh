@@ -39,6 +39,27 @@ backend_listener_pids() {
     fi
 }
 
+frontend_dev_pids() {
+    {
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/.bin/concurrently" || true
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/.bin/vite" || true
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/.bin/tsc" || true
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/.bin/wait-on" || true
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/.bin/electron" || true
+        pgrep -f "${ROOT_DIR}/frontend/node_modules/electron/dist/electron .*${ROOT_DIR}/frontend/dist-electron/main.cjs" || true
+    } | sort -u
+}
+
+pgids_for_pids() {
+    local pids="${1:-}"
+    while IFS= read -r pid; do
+        [[ -z "${pid}" ]] && continue
+        local pgid
+        pgid="$(pgid_for_pid "${pid}")"
+        [[ -n "${pgid}" ]] && echo "${pgid}"
+    done <<< "${pids}" | sort -u
+}
+
 format_pids_inline() {
     tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
@@ -102,6 +123,14 @@ start_frontend() {
     if [[ -f "${FRONTEND_PID_FILE}" ]] && is_pid_running "$(cat "${FRONTEND_PID_FILE}")"; then
         echo "[frontend] already running (pid $(cat "${FRONTEND_PID_FILE}"))"
         return
+    fi
+
+    local unmanaged_pids
+    unmanaged_pids="$(frontend_dev_pids || true)"
+    if [[ -n "${unmanaged_pids}" ]]; then
+        echo "[frontend] dev stack appears to already be running (unmanaged pid(s): $(echo "${unmanaged_pids}" | format_pids_inline))"
+        echo "[frontend] run ./scripts/dev.sh stop to clean up lingering frontend processes."
+        return 1
     fi
 
     (
@@ -204,13 +233,58 @@ stop_backend() {
 
 stop_frontend() {
     stop_service "frontend" "${FRONTEND_PID_FILE}" "group"
+
+    local unmanaged_pids unmanaged_pgids
+    unmanaged_pids="$(frontend_dev_pids || true)"
+    if [[ -z "${unmanaged_pids}" ]]; then
+        return
+    fi
+
+    unmanaged_pgids="$(pgids_for_pids "${unmanaged_pids}" || true)"
+    echo "[frontend] stopping lingering dev process(es): pid(s) $(echo "${unmanaged_pids}" | format_pids_inline)"
+
+    if [[ -n "${unmanaged_pgids}" ]]; then
+        while IFS= read -r pgid; do
+            [[ -z "${pgid}" ]] && continue
+            kill -- "-${pgid}" >/dev/null 2>&1 || true
+        done <<< "${unmanaged_pgids}"
+    else
+        while IFS= read -r pid; do
+            [[ -z "${pid}" ]] && continue
+            is_pid_running "${pid}" && kill "${pid}" >/dev/null 2>&1 || true
+        done <<< "${unmanaged_pids}"
+    fi
+
+    local _i
+    for _i in {1..30}; do
+        unmanaged_pids="$(frontend_dev_pids || true)"
+        if [[ -z "${unmanaged_pids}" ]]; then
+            echo "[frontend] cleared lingering dev process(es)"
+            return
+        fi
+        sleep 0.2
+    done
+
+    if [[ -n "${unmanaged_pgids}" ]]; then
+        while IFS= read -r pgid; do
+            [[ -z "${pgid}" ]] && continue
+            kill -9 -- "-${pgid}" >/dev/null 2>&1 || true
+        done <<< "${unmanaged_pgids}"
+    else
+        while IFS= read -r pid; do
+            [[ -z "${pid}" ]] && continue
+            is_pid_running "${pid}" && kill -9 "${pid}" >/dev/null 2>&1 || true
+        done <<< "${unmanaged_pids}"
+    fi
+    echo "[frontend] force cleared lingering dev process(es)"
 }
 
 print_status() {
-    local backend_pid frontend_pid listener_pids
+    local backend_pid frontend_pid listener_pids frontend_process_pids
     backend_pid="$(read_pid "${BACKEND_PID_FILE}")"
     frontend_pid="$(read_pid "${FRONTEND_PID_FILE}")"
     listener_pids="$(backend_listener_pids || true)"
+    frontend_process_pids="$(frontend_dev_pids || true)"
 
     if [[ -n "${backend_pid:-}" ]] && is_pid_running "${backend_pid}"; then
         echo "[backend] running (pid ${backend_pid})"
@@ -222,6 +296,8 @@ print_status() {
 
     if [[ -n "${frontend_pid:-}" ]] && is_pid_running "${frontend_pid}"; then
         echo "[frontend] running (pid ${frontend_pid})"
+    elif [[ -n "${frontend_process_pids}" ]]; then
+        echo "[frontend] running (unmanaged dev pid(s): $(echo "${frontend_process_pids}" | format_pids_inline))"
     else
         echo "[frontend] stopped"
     fi

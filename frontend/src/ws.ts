@@ -1,12 +1,31 @@
 type WSHandlers = {
   onStatus: (payload: { state: string; details?: string }) => void
-  onLive: (payload: { text: string; t: number }) => void
+  onLive: (payload: { text: string; t: number; streamKind?: 'system' | 'mic'; sourceName?: string | null }) => void
   onSegment: (payload: { segment: any }) => void
-  onAudioLevel: (payload: { rms: number; level: number; t: number }) => void
-  onAudioSources: (payload: { sources: string[]; defaultSource?: string; selectedSource?: string }) => void
+  onAudioLevel: (payload: {
+    rms: number
+    peak?: number
+    level: number
+    t: number
+    streamKind?: 'system' | 'mic'
+    sourceName?: string | null
+  }) => void
+  onAudioSources: (payload: {
+    sources: string[]
+    defaultSource?: string
+    selectedSource?: string
+    monitorSources?: string[]
+    defaultMonitorSource?: string
+    selectedMonitorSource?: string
+    micSources?: string[]
+    defaultMicSource?: string
+    selectedMicSource?: string
+    selectedMode?: 'system' | 'mic'
+  }) => void
   onModelsList: (payload: { models: string[]; selectedModel?: string }) => void
   onModelsDetails: (payload: { models: Array<{ id: string; object: string; created: number | null; owned_by: string }> }) => void
-  onQueryState: (payload: { running: boolean; requestId?: string }) => void
+  onQueryState: (payload: { running: boolean; requestId?: string; cancelled?: boolean }) => void
+  onQueryChunk: (payload: { requestId?: string; delta?: string }) => void
   onQueryResponse: (payload: { requestId?: string; text: string; latencyMs?: number; model?: string; screenshotUsed?: boolean }) => void
   onBenchmarkProgress: (payload: {
     benchmarkId?: string
@@ -25,7 +44,18 @@ type WSHandlers = {
     run?: number
     success?: boolean
     jsonValid?: boolean
+    timeToFirstTokenMs?: number | null
+    ttcMs?: number | null
     latencyMs?: number | null
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    costUsd?: number | null
+    qualityScore?: number
+    qualityPassed?: boolean
+    qualityChecks?: Array<{ name: string; passed: boolean; details: string }>
+    imageCapabilityClaim?: string | null
+    imageWorked?: boolean | null
     responsePreview?: string
     error?: string | null
     imageRef?: string | null
@@ -92,6 +122,9 @@ export class WSClient {
             break
           case 'query_state':
             this.handlers.onQueryState(data)
+            break
+          case 'query_chunk':
+            this.handlers.onQueryChunk(data)
             break
           case 'query_response':
             this.handlers.onQueryResponse(data)

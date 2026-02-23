@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -14,6 +15,7 @@ from dotenv import load_dotenv
 
 from .audio_capture import AudioCapture, discover_audio_sources
 from .benchmark_harness import BENCHMARK_HARNESS_PROMPT, build_benchmark_case_input
+from .model_pricing import estimate_cost_usd
 from .openai_client import OpenAIClient, preset_by_id
 from .settings import Settings
 from .stt import Segment, StreamingTranscriber
@@ -23,7 +25,9 @@ from .ws_server import WebSocketHub
 
 @dataclass
 class AppState:
-    audio_source: Optional[str] = None
+    monitor_source: Optional[str] = None
+    mic_source: Optional[str] = None
+    audio_mode: str = "system"
     running: bool = False
 
 
@@ -33,22 +37,47 @@ class AppController:
         load_dotenv(backend_dir / ".env", override=False)
         load_dotenv(backend_dir / ".env.local", override=True)
         self.settings = Settings()
-        self.state = AppState()
+        self.state = AppState(audio_mode=self._normalize_audio_mode(self.settings.audio_mode))
         self.transcript = TranscriptStore()
         self.hub = WebSocketHub(self.settings.ws_host, self.settings.ws_port, self._handle_message)
         self._capture: Optional[AudioCapture] = None
         self._transcriber: Optional[StreamingTranscriber] = None
         self._audio_task: Optional[asyncio.Task] = None
         self._stt_task: Optional[asyncio.Task] = None
+        self._system_meter_capture: Optional[AudioCapture] = None
+        self._mic_meter_capture: Optional[AudioCapture] = None
+        self._system_meter_task: Optional[asyncio.Task] = None
+        self._mic_meter_task: Optional[asyncio.Task] = None
+        self._query_task: Optional[asyncio.Task] = None
+        self._query_request_id: Optional[str] = None
         self._stop_event = asyncio.Event()
         self._openai_client: Optional[OpenAIClient] = None
+        self._active_stream_kind = "system"
+        self._active_source_name: Optional[str] = None
+
+    @staticmethod
+    def _normalize_audio_mode(value: Optional[str]) -> str:
+        mode = (value or "").strip().lower()
+        if mode in {"mic", "microphone"}:
+            return "mic"
+        return "system"
+
+    async def _restart_transcription_if_running(self) -> None:
+        if not self.state.running:
+            return
+        await self.stop_transcription(emit_status=False)
+        await self.start_transcription()
 
     async def start(self) -> None:
         await self.hub.start()
+        await self._broadcast_audio_sources()
         await self.hub.broadcast("status", {"state": "ready", "details": "WebSocket ready"})
 
     async def stop(self) -> None:
+        await self.cancel_query({})
         await self.stop_transcription()
+        await self._stop_meter_loop("system")
+        await self._stop_meter_loop("mic")
         await self.hub.stop()
         if self._openai_client:
             await self._openai_client.close()
@@ -56,8 +85,22 @@ class AppController:
     async def _handle_message(self, data: dict) -> None:
         msg_type = data.get("type")
         if msg_type == "set_audio_source":
-            self.state.audio_source = data.get("sourceName")
-            await self.hub.broadcast("status", {"state": "source_set", "details": self.state.audio_source})
+            self.state.monitor_source = data.get("sourceName")
+            await self.hub.broadcast("status", {"state": "source_set", "details": self.state.monitor_source})
+            if self.state.running and self._active_stream_kind == "system":
+                await self._restart_transcription_if_running()
+            await self._broadcast_audio_sources()
+        elif msg_type == "set_mic_source":
+            self.state.mic_source = data.get("sourceName")
+            await self.hub.broadcast("status", {"state": "mic_source_set", "details": self.state.mic_source})
+            if self.state.running and self._active_stream_kind == "mic":
+                await self._restart_transcription_if_running()
+            await self._broadcast_audio_sources()
+        elif msg_type == "set_audio_mode":
+            self.state.audio_mode = self._normalize_audio_mode(data.get("mode"))
+            await self.hub.broadcast("status", {"state": "mode_set", "details": self.state.audio_mode})
+            if self.state.running:
+                await self._restart_transcription_if_running()
             await self._broadcast_audio_sources()
         elif msg_type == "get_audio_sources":
             await self._broadcast_audio_sources()
@@ -71,6 +114,8 @@ class AppController:
             await self.stop_transcription()
         elif msg_type == "run_query":
             await self.run_query(data)
+        elif msg_type == "cancel_query":
+            await self.cancel_query(data)
         elif msg_type == "run_benchmark":
             await self.run_benchmark(data)
         elif msg_type == "clear_transcript":
@@ -79,15 +124,149 @@ class AppController:
 
     async def _broadcast_audio_sources(self) -> None:
         sources = discover_audio_sources()
-        selected_source = self.state.audio_source or self.settings.audio_source or sources.preferred_monitor
+        selected_monitor_source = (
+            self.state.monitor_source or self.settings.audio_source or sources.preferred_monitor
+        )
+        selected_mic_source = (
+            self.state.mic_source or self.settings.audio_mic_source or sources.preferred_mic
+        )
+        selected_mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
+        await self._ensure_meter_loop("system", selected_monitor_source)
+        await self._ensure_meter_loop("mic", selected_mic_source)
         await self.hub.broadcast(
             "audio_sources",
             {
+                # Legacy monitor-only fields for backward compatibility.
                 "sources": sources.monitor_sources,
                 "defaultSource": sources.default_monitor,
-                "selectedSource": selected_source,
+                "selectedSource": selected_monitor_source,
+                # New dual-source fields.
+                "monitorSources": sources.monitor_sources,
+                "defaultMonitorSource": sources.default_monitor,
+                "selectedMonitorSource": selected_monitor_source,
+                "micSources": sources.mic_sources,
+                "defaultMicSource": sources.default_source,
+                "selectedMicSource": selected_mic_source,
+                "selectedMode": selected_mode,
             },
         )
+
+    @staticmethod
+    def _meter_attrs(stream_kind: str) -> tuple[str, str]:
+        if stream_kind == "mic":
+            return ("_mic_meter_capture", "_mic_meter_task")
+        return ("_system_meter_capture", "_system_meter_task")
+
+    @staticmethod
+    def _compute_level(samples: np.ndarray, rms_reference: float, peak_reference: float) -> tuple[float, float, float]:
+        rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        rms_level = rms / rms_reference
+        peak_level = peak / peak_reference
+        level = min(1.0, max(0.0, max(rms_level, peak_level * 0.9)))
+        return rms, peak, level
+
+    async def _emit_audio_level(self, stream_kind: str, source_name: Optional[str], rms: float, peak: float, level: float, t: float) -> None:
+        await self.hub.broadcast(
+            "audio_level",
+            {
+                "rms": rms,
+                "peak": peak,
+                "level": level,
+                "t": t,
+                "streamKind": stream_kind,
+                "sourceName": source_name,
+            },
+        )
+
+    async def _ensure_meter_loop(self, stream_kind: str, source_name: Optional[str]) -> None:
+        capture_attr, task_attr = self._meter_attrs(stream_kind)
+        capture = getattr(self, capture_attr)
+        task = getattr(self, task_attr)
+        if (
+            source_name
+            and capture
+            and task
+            and not task.done()
+            and capture.source_name == source_name
+        ):
+            return
+        await self._stop_meter_loop(stream_kind)
+        if not source_name:
+            await self._emit_audio_level(
+                stream_kind=stream_kind,
+                source_name=None,
+                rms=0.0,
+                peak=0.0,
+                level=0.0,
+                t=asyncio.get_event_loop().time(),
+            )
+            return
+        next_capture = AudioCapture(source_name, self.settings.chunk_bytes)
+        try:
+            await next_capture.start()
+        except Exception as exc:
+            await self.hub.broadcast("error", {"message": f"Audio meter ({stream_kind}) failed: {exc}"})
+            return
+        next_task = asyncio.create_task(self._meter_loop(stream_kind, next_capture))
+        setattr(self, capture_attr, next_capture)
+        setattr(self, task_attr, next_task)
+
+    async def _stop_meter_loop(self, stream_kind: str) -> None:
+        capture_attr, task_attr = self._meter_attrs(stream_kind)
+        capture = getattr(self, capture_attr)
+        task = getattr(self, task_attr)
+        source_name = capture.source_name if capture else None
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if capture:
+            await capture.stop()
+        setattr(self, capture_attr, None)
+        setattr(self, task_attr, None)
+        await self._emit_audio_level(
+            stream_kind=stream_kind,
+            source_name=source_name,
+            rms=0.0,
+            peak=0.0,
+            level=0.0,
+            t=asyncio.get_event_loop().time(),
+        )
+
+    async def _meter_loop(self, stream_kind: str, capture: AudioCapture) -> None:
+        loop = asyncio.get_event_loop()
+        last_level_broadcast_at = 0.0
+        last_level_sent = -1.0
+        level_interval = max(0.01, self.settings.audio_level_interval_seconds)
+        rms_reference = max(1e-4, self.settings.audio_level_rms_reference)
+        peak_reference = max(1e-4, self.settings.audio_level_peak_reference)
+        try:
+            async for chunk in capture.stream():
+                samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                now = loop.time()
+                rms, peak, level = self._compute_level(
+                    samples=samples,
+                    rms_reference=rms_reference,
+                    peak_reference=peak_reference,
+                )
+                level_jump = abs(level - last_level_sent)
+                should_emit_level = (now - last_level_broadcast_at >= level_interval) or level_jump >= 0.08
+                if not should_emit_level:
+                    continue
+                await self._emit_audio_level(
+                    stream_kind=stream_kind,
+                    source_name=capture.source_name,
+                    rms=rms,
+                    peak=peak,
+                    level=level,
+                    t=now,
+                )
+                last_level_broadcast_at = now
+                last_level_sent = level
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self.hub.broadcast("error", {"message": f"Audio meter loop ({stream_kind}) error: {exc}"})
 
     async def _broadcast_models(self) -> None:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -129,48 +308,66 @@ class AppController:
         if self.state.running:
             return
         sources = discover_audio_sources()
-        chosen = self.state.audio_source or self.settings.audio_source or sources.preferred_monitor
+        mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
+        monitor_source = self.state.monitor_source or self.settings.audio_source or sources.preferred_monitor
+        mic_source = self.state.mic_source or self.settings.audio_mic_source or sources.preferred_mic
+        chosen = mic_source if mode == "mic" else monitor_source
         if not chosen:
+            available_sources = sources.mic_sources if mode == "mic" else sources.monitor_sources
+            kind_label = "microphone" if mode == "mic" else "monitor"
             await self.hub.broadcast(
                 "error",
                 {
-                    "message": "No monitor sources found. Start audio, ensure Pulse/PipeWire is running, or set source manually.",
-                    "sources": sources.monitor_sources,
+                    "message": (
+                        f"No {kind_label} sources found. Ensure Pulse/PipeWire is running, "
+                        "or set source manually."
+                    ),
+                    "sources": available_sources,
                 },
             )
             return
+        self.state.audio_mode = mode
         self._capture = AudioCapture(chosen, self.settings.chunk_bytes)
         try:
             await self._capture.start()
         except Exception as exc:
             await self.hub.broadcast("error", {"message": str(exc)})
             return
-        self._transcriber = StreamingTranscriber(
-            sample_rate=self.settings.sample_rate,
-            model_name=self.settings.stt_model,
-            device=self.settings.stt_device,
-            compute_type=self.settings.stt_compute_type,
-            vad_filter=self.settings.stt_vad_filter,
-            partial_window=self.settings.partial_window_seconds,
-            partial_interval=self.settings.partial_interval_seconds,
-            final_window=self.settings.final_window_seconds,
-            final_interval=self.settings.final_interval_seconds,
-            final_lag=self.settings.final_lag_seconds,
-            on_live=self._on_live_text,
-            on_segment=self._on_segment,
-        )
-        try:
-            await self._transcriber.load_model()
-        except Exception as exc:
-            await self.hub.broadcast("error", {"message": f"Failed to load model: {exc}"})
-            return
+        if not self._transcriber:
+            self._transcriber = StreamingTranscriber(
+                sample_rate=self.settings.sample_rate,
+                model_name=self.settings.stt_model,
+                device=self.settings.stt_device,
+                compute_type=self.settings.stt_compute_type,
+                vad_filter=self.settings.stt_vad_filter,
+                partial_window=self.settings.partial_window_seconds,
+                partial_interval=self.settings.partial_interval_seconds,
+                final_window=self.settings.final_window_seconds,
+                final_interval=self.settings.final_interval_seconds,
+                final_lag=self.settings.final_lag_seconds,
+                on_live=self._on_live_text,
+                on_segment=self._on_segment,
+            )
+            try:
+                await self._transcriber.load_model()
+            except Exception as exc:
+                if self._capture:
+                    await self._capture.stop()
+                    self._capture = None
+                await self.hub.broadcast("error", {"message": f"Failed to load model: {exc}"})
+                return
+        self._transcriber.reset_state()
+        self._active_stream_kind = mode
+        self._active_source_name = chosen
         self._stop_event.clear()
         self._audio_task = asyncio.create_task(self._audio_loop())
         self._stt_task = asyncio.create_task(self._stt_loop())
         self.state.running = True
-        await self.hub.broadcast("status", {"state": "transcribing", "details": f"Using {chosen}"})
+        source_kind = "microphone" if mode == "mic" else "system audio"
+        await self.hub.broadcast("status", {"state": "transcribing", "details": f"Using {source_kind}: {chosen}"})
+        await self._broadcast_audio_sources()
 
-    async def stop_transcription(self) -> None:
+    async def stop_transcription(self, emit_status: bool = True) -> None:
         if not self.state.running:
             return
         self._stop_event.set()
@@ -181,29 +378,21 @@ class AppController:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._capture:
             await self._capture.stop()
+        self._audio_task = None
+        self._stt_task = None
+        self._capture = None
+        self._active_source_name = None
         self.state.running = False
-        await self.hub.broadcast("status", {"state": "stopped", "details": "Transcription stopped"})
+        if emit_status:
+            await self.hub.broadcast("status", {"state": "stopped", "details": "Transcription stopped"})
 
     async def _audio_loop(self) -> None:
         assert self._capture is not None
         assert self._transcriber is not None
-        loop = asyncio.get_event_loop()
-        last_rms_print_at = 0.0
-        last_level_broadcast_at = 0.0
         try:
             async for chunk in self._capture.stream():
                 samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
                 await self._transcriber.add_audio(samples)
-                now = loop.time()
-                rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
-                # Compress RMS into a stable 0..1 visual meter.
-                level = min(1.0, max(0.0, rms / 0.08))
-                if now - last_level_broadcast_at >= 0.12:
-                    await self.hub.broadcast("audio_level", {"rms": rms, "level": level, "t": now})
-                    last_level_broadcast_at = now
-                if now - last_rms_print_at >= 1.0:
-                    print(f"[audio] RMS={rms:.4f}")
-                    last_rms_print_at = now
         except Exception as exc:
             await self.hub.broadcast("error", {"message": f"Audio capture error: {exc}"})
 
@@ -217,86 +406,133 @@ class AppController:
             await self.hub.broadcast("error", {"message": f"STT processing error: {exc}"})
 
     async def _on_live_text(self, text: str, timestamp: float) -> None:
-        await self.hub.broadcast("transcript_live", {"text": text, "t": timestamp})
+        await self.hub.broadcast(
+            "transcript_live",
+            {
+                "text": text,
+                "t": timestamp,
+                "streamKind": self._active_stream_kind,
+                "sourceName": self._active_source_name,
+            },
+        )
 
     async def _on_segment(self, segment: Segment) -> None:
+        segment.source_kind = self._active_stream_kind
+        segment.source_name = self._active_source_name
         self.transcript.add_segment(segment)
         await self.hub.broadcast("transcript_segment", {"segment": segment.__dict__})
 
     async def run_query(self, data: dict) -> None:
-        request_id = data.get("requestId")
-        selected_text = (data.get("selectedText") or "").strip()
-        if not selected_text:
-            await self.hub.broadcast("error", {"message": "No selected text provided."})
-            return
-        preset_id = data.get("presetId")
-        custom_instruction = (data.get("customInstruction") or "").strip()
-        instruction = custom_instruction
-        if preset_id:
-            preset = preset_by_id(preset_id)
-            if not preset:
-                await self.hub.broadcast("error", {"message": f"Unknown preset {preset_id}."})
-                return
-            instruction = preset.instruction
-        if not instruction:
-            await self.hub.broadcast("error", {"message": "Instruction missing."})
-            return
-        requested_model = (data.get("model") or "").strip() or self.settings.openai_model
-        include_screenshot = bool(data.get("includeScreenshot"))
-        screenshot_data_url = (data.get("screenshotDataUrl") or "").strip() or None
-        if screenshot_data_url and not screenshot_data_url.startswith("data:image/"):
-            screenshot_data_url = None
-        if not include_screenshot:
-            screenshot_data_url = None
+        request_id = str(data.get("requestId") or "").strip() or f"query_{int(time() * 1000)}"
+        if self._query_task and not self._query_task.done():
+            await self.cancel_query({"requestId": self._query_request_id or request_id})
+        payload = {**data, "requestId": request_id}
+        self._query_request_id = request_id
+        self._query_task = asyncio.create_task(self._run_query_worker(payload))
 
-        selection_range = None
-        selection_payload = data.get("selectionTimeRange")
-        if selection_payload and "start" in selection_payload and "end" in selection_payload:
-            selection_range = SelectionRange(
-                start=float(selection_payload["start"]),
-                end=float(selection_payload["end"]),
-            )
-
-        context_text = self.transcript.build_context(
-            selection_range,
-            before_seconds=self.settings.context_before_seconds,
-            after_seconds=self.settings.context_after_seconds,
-        )
-
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            await self.hub.broadcast("error", {"message": "OPENAI_API_KEY is missing."})
+    async def cancel_query(self, data: dict) -> None:
+        task = self._query_task
+        request_id = str(data.get("requestId") or self._query_request_id or "").strip()
+        if not task or task.done():
+            if request_id:
+                await self.hub.broadcast("query_state", {"running": False, "requestId": request_id, "cancelled": True})
             return
-        if not self._openai_client:
-            self._openai_client = OpenAIClient(
-                api_key=api_key,
-                model=self.settings.openai_model,
-                timeout_seconds=self.settings.openai_timeout_seconds,
-            )
-        await self.hub.broadcast("query_state", {"running": True, "requestId": request_id})
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _run_query_worker(self, data: dict) -> None:
+        request_id = str(data.get("requestId") or "").strip()
+        query_started = False
         try:
-            result = await self._openai_client.run_query(
-                instruction=instruction,
-                selected_text=selected_text,
-                context_text=context_text,
-                model=requested_model,
-                screenshot_data_url=screenshot_data_url,
+            selected_text = (data.get("selectedText") or "").strip()
+            if not selected_text:
+                await self.hub.broadcast("error", {"message": "No selected text provided."})
+                return
+            preset_id = data.get("presetId")
+            custom_instruction = (data.get("customInstruction") or "").strip()
+            instruction = custom_instruction
+            if preset_id:
+                preset = preset_by_id(preset_id)
+                if not preset:
+                    await self.hub.broadcast("error", {"message": f"Unknown preset {preset_id}."})
+                    return
+                instruction = preset.instruction
+            if not instruction:
+                await self.hub.broadcast("error", {"message": "Instruction missing."})
+                return
+            requested_model = (data.get("model") or "").strip() or self.settings.openai_model
+            include_screenshot = bool(data.get("includeScreenshot"))
+            screenshot_data_url = (data.get("screenshotDataUrl") or "").strip() or None
+            if screenshot_data_url and not screenshot_data_url.startswith("data:image/"):
+                screenshot_data_url = None
+            if not include_screenshot:
+                screenshot_data_url = None
+
+            selection_range = None
+            selection_payload = data.get("selectionTimeRange")
+            if selection_payload and "start" in selection_payload and "end" in selection_payload:
+                selection_range = SelectionRange(
+                    start=float(selection_payload["start"]),
+                    end=float(selection_payload["end"]),
+                )
+
+            context_text = self.transcript.build_context(
+                selection_range,
+                before_seconds=self.settings.context_before_seconds,
+                after_seconds=self.settings.context_after_seconds,
             )
-        except Exception as exc:
+
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                await self.hub.broadcast("error", {"message": "OPENAI_API_KEY is missing."})
+                return
+            if not self._openai_client:
+                self._openai_client = OpenAIClient(
+                    api_key=api_key,
+                    model=self.settings.openai_model,
+                    timeout_seconds=self.settings.openai_timeout_seconds,
+                )
+
+            query_started = True
+            await self.hub.broadcast("query_state", {"running": True, "requestId": request_id})
+            try:
+                result = await self._openai_client.run_query(
+                    instruction=instruction,
+                    selected_text=selected_text,
+                    context_text=context_text,
+                    model=requested_model,
+                    screenshot_data_url=screenshot_data_url,
+                    stream=True,
+                    on_stream_delta=lambda delta: self.hub.broadcast(
+                        "query_chunk",
+                        {"requestId": request_id, "delta": delta},
+                    ),
+                )
+            except Exception as exc:
+                await self.hub.broadcast("query_state", {"running": False, "requestId": request_id})
+                await self.hub.broadcast("error", {"message": f"OpenAI request failed: {exc}"})
+                return
+
             await self.hub.broadcast("query_state", {"running": False, "requestId": request_id})
-            await self.hub.broadcast("error", {"message": f"OpenAI request failed: {exc}"})
+            await self.hub.broadcast(
+                "query_response",
+                {
+                    "requestId": request_id,
+                    "text": result.text,
+                    "latencyMs": result.latency_ms,
+                    "model": requested_model,
+                    "screenshotUsed": bool(screenshot_data_url),
+                },
+            )
+        except asyncio.CancelledError:
+            if query_started:
+                await self.hub.broadcast("query_state", {"running": False, "requestId": request_id, "cancelled": True})
             return
-        await self.hub.broadcast("query_state", {"running": False, "requestId": request_id})
-        await self.hub.broadcast(
-            "query_response",
-            {
-                "requestId": request_id,
-                "text": result.text,
-                "latencyMs": result.latency_ms,
-                "model": requested_model,
-                "screenshotUsed": bool(screenshot_data_url),
-            },
-        )
+        finally:
+            if self._query_task is asyncio.current_task():
+                self._query_task = None
+                self._query_request_id = None
+
 
     @staticmethod
     def _normalize_benchmark_tests(data: dict) -> list[dict]:
@@ -410,6 +646,15 @@ class AppController:
                         "failures": 0,
                         "jsonValidRuns": 0,
                         "latencies": [],
+                        "firstTokenLatencies": [],
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "costUsd": 0.0,
+                        "costKnownRuns": 0,
+                        "qualityScores": [],
+                        "qualityPassRuns": 0,
+                        "imageRuns": 0,
+                        "imageWorkedRuns": 0,
                     },
                 )
                 for run_index in range(1, repeats + 1):
@@ -425,21 +670,53 @@ class AppController:
                             context_text="",
                             model=model,
                             screenshot_data_url=image_data_url,
+                            stream=True,
                         )
                         row["runs"] += 1
                         row["latencies"].append(result.latency_ms)
+                        if result.first_token_latency_ms is not None:
+                            row["firstTokenLatencies"].append(result.first_token_latency_ms)
+                        if result.input_tokens is not None:
+                            row["inputTokens"] += result.input_tokens
+                        if result.output_tokens is not None:
+                            row["outputTokens"] += result.output_tokens
                         response_text = result.text.strip()
                         json_valid = False
                         parse_error = None
+                        parsed_json: Optional[dict] = None
                         try:
                             parsed = json.loads(response_text)
                             json_valid = isinstance(parsed, dict)
+                            if json_valid:
+                                parsed_json = parsed
                             if not json_valid:
                                 parse_error = "Response was valid JSON but not an object."
                         except json.JSONDecodeError as exc:
                             parse_error = f"{exc.msg} (pos {exc.pos})"
                         if json_valid:
                             row["jsonValidRuns"] += 1
+                        quality_report = self._evaluate_quality(
+                            parsed_json=parsed_json,
+                            user_prompt=user_prompt,
+                            image_required=bool(image_data_url),
+                        )
+                        row["qualityScores"].append(quality_report["score"])
+                        if quality_report["passed"]:
+                            row["qualityPassRuns"] += 1
+                        image_claim = quality_report["imageCapabilityClaim"]
+                        image_worked = quality_report["imageWorked"]
+                        if image_data_url:
+                            row["imageRuns"] += 1
+                            if image_worked:
+                                row["imageWorkedRuns"] += 1
+                        estimated_cost_usd = estimate_cost_usd(
+                            model=model,
+                            input_tokens=result.input_tokens,
+                            output_tokens=result.output_tokens,
+                        )
+                        if estimated_cost_usd is not None:
+                            row["costUsd"] += estimated_cost_usd
+                            row["costKnownRuns"] += 1
                         attempts.append(
                             {
                                 "testId": test_id,
@@ -447,7 +724,18 @@ class AppController:
                                 "run": run_index,
                                 "success": True,
                                 "jsonValid": json_valid,
+                                "timeToFirstTokenMs": result.first_token_latency_ms,
+                                "ttcMs": result.latency_ms,
                                 "latencyMs": result.latency_ms,
+                                "inputTokens": result.input_tokens,
+                                "outputTokens": result.output_tokens,
+                                "totalTokens": result.total_tokens,
+                                "costUsd": estimated_cost_usd,
+                                "qualityScore": quality_report["score"],
+                                "qualityPassed": quality_report["passed"],
+                                "qualityChecks": quality_report["checks"],
+                                "imageCapabilityClaim": image_claim,
+                                "imageWorked": image_worked,
                                 "responsePreview": response_text[:500],
                                 "error": parse_error,
                                 "imageRef": image_ref,
@@ -463,7 +751,18 @@ class AppController:
                                 "run": run_index,
                                 "success": False,
                                 "jsonValid": False,
+                                "timeToFirstTokenMs": None,
+                                "ttcMs": None,
                                 "latencyMs": None,
+                                "inputTokens": None,
+                                "outputTokens": None,
+                                "totalTokens": None,
+                                "costUsd": None,
+                                "qualityScore": 0.0,
+                                "qualityPassed": False,
+                                "qualityChecks": [],
+                                "imageCapabilityClaim": None,
+                                "imageWorked": None,
                                 "responsePreview": "",
                                 "error": str(exc),
                                 "imageRef": image_ref,
@@ -496,6 +795,20 @@ class AppController:
         rows: list[dict] = []
         for row in aggregate.values():
             latencies = row["latencies"]
+            avg_first_token_ms = mean(row["firstTokenLatencies"]) if row["firstTokenLatencies"] else None
+            avg_ttc_ms = mean(latencies) if latencies else None
+            min_ttc_ms = min(latencies) if latencies else None
+            max_ttc_ms = max(latencies) if latencies else None
+            aggregate_score = self._aggregate_benchmark_score(
+                runs=row["runs"],
+                failures=row["failures"],
+                json_valid_runs=row["jsonValidRuns"],
+                avg_ttc_ms=avg_ttc_ms,
+                avg_first_token_ms=avg_first_token_ms,
+                avg_quality_score=mean(row["qualityScores"]) if row["qualityScores"] else None,
+                image_runs=row["imageRuns"],
+                image_worked_runs=row["imageWorkedRuns"],
+            )
             rows.append(
                 {
                     "testId": row["testId"],
@@ -503,9 +816,22 @@ class AppController:
                     "runs": row["runs"],
                     "failures": row["failures"],
                     "jsonValidRuns": row["jsonValidRuns"],
-                    "avgLatencyMs": mean(latencies) if latencies else None,
-                    "minLatencyMs": min(latencies) if latencies else None,
-                    "maxLatencyMs": max(latencies) if latencies else None,
+                    "avgFirstTokenMs": avg_first_token_ms,
+                    "avgTtcMs": avg_ttc_ms,
+                    "minTtcMs": min_ttc_ms,
+                    "maxTtcMs": max_ttc_ms,
+                    "avgLatencyMs": avg_ttc_ms,
+                    "minLatencyMs": min_ttc_ms,
+                    "maxLatencyMs": max_ttc_ms,
+                    "totalInputTokens": row["inputTokens"],
+                    "totalOutputTokens": row["outputTokens"],
+                    "totalCostUsd": row["costUsd"] if row["costKnownRuns"] > 0 else None,
+                    "costKnownRuns": row["costKnownRuns"],
+                    "avgQualityScore": mean(row["qualityScores"]) if row["qualityScores"] else None,
+                    "qualityPassRuns": row["qualityPassRuns"],
+                    "imageRuns": row["imageRuns"],
+                    "imageWorkedRuns": row["imageWorkedRuns"],
+                    "aggregateScore": aggregate_score,
                 }
             )
 
@@ -534,6 +860,124 @@ class AppController:
                 "attempts": attempts,
             },
         )
+
+    @staticmethod
+    def _evaluate_quality(parsed_json: Optional[dict], user_prompt: str, image_required: bool) -> dict:
+        checks: list[dict] = []
+        if not parsed_json:
+            checks.append({"name": "valid_json_object", "passed": False, "details": "Response is not a JSON object."})
+            return {
+                "score": 0.0,
+                "passed": False,
+                "checks": checks,
+                "imageCapabilityClaim": None,
+                "imageWorked": None,
+            }
+
+        required_keys = {
+            "test_id",
+            "image_used",
+            "image_capability_claim",
+            "answer",
+            "confidence",
+            "self_check",
+            "failure_modes",
+        }
+        missing = [key for key in sorted(required_keys) if key not in parsed_json]
+        checks.append(
+            {
+                "name": "required_keys",
+                "passed": len(missing) == 0,
+                "details": "all keys present" if not missing else f"missing: {', '.join(missing)}",
+            }
+        )
+
+        answer = str(parsed_json.get("answer") or "").strip()
+        checks.append(
+            {
+                "name": "answer_non_empty",
+                "passed": bool(answer),
+                "details": "answer present" if answer else "answer empty",
+            }
+        )
+
+        image_claim_raw = str(parsed_json.get("image_capability_claim") or "").strip().lower() or None
+        image_worked = image_claim_raw == "worked" if image_required else None
+        if image_required:
+            checks.append(
+                {
+                    "name": "image_capability_worked",
+                    "passed": bool(image_worked),
+                    "details": f"claim={image_claim_raw or 'missing'}",
+                }
+            )
+
+        identifiers_required = "identifier" in user_prompt.lower()
+        if identifiers_required:
+            matches = re.findall(r"\b[A-Z][A-Z0-9_\-]{2,}\b", answer)
+            checks.append(
+                {
+                    "name": "mentions_2_identifiers",
+                    "passed": len(matches) >= 2,
+                    "details": f"found={len(matches)}",
+                }
+            )
+
+        passed_count = sum(1 for item in checks if item["passed"])
+        score = passed_count / len(checks) if checks else 0.0
+        return {
+            "score": score,
+            "passed": passed_count == len(checks),
+            "checks": checks,
+            "imageCapabilityClaim": image_claim_raw,
+            "imageWorked": image_worked,
+        }
+
+    @staticmethod
+    def _speed_score_from_ms(value_ms: Optional[float], pivot_ms: float) -> float:
+        """Convert a latency metric into [0,1], where lower latency scores higher."""
+        if value_ms is None or value_ms <= 0:
+            return 0.0
+        return 1.0 / (1.0 + (value_ms / pivot_ms))
+
+    @classmethod
+    def _aggregate_benchmark_score(
+        cls,
+        runs: int,
+        failures: int,
+        json_valid_runs: int,
+        avg_ttc_ms: Optional[float],
+        avg_first_token_ms: Optional[float],
+        avg_quality_score: Optional[float],
+        image_runs: int,
+        image_worked_runs: int,
+    ) -> float:
+        """
+        Produce a speed-first aggregate score (0-100).
+        Weights:
+        - 82% speed (TTC + TTFT)
+        - 13% reliability (success + JSON validity)
+        - 5% quality/image behavior
+        """
+        total_attempts = runs + failures
+        success_rate = (runs / total_attempts) if total_attempts > 0 else 0.0
+        json_rate = (json_valid_runs / runs) if runs > 0 else 0.0
+        quality_rate = max(0.0, min(1.0, avg_quality_score if avg_quality_score is not None else 0.0))
+        image_rate = (image_worked_runs / image_runs) if image_runs > 0 else 1.0
+
+        # Speed is the primary objective: tighter pivots and heavier TTC weighting.
+        ttc_score = cls._speed_score_from_ms(avg_ttc_ms, pivot_ms=900.0)
+        ttft_score = cls._speed_score_from_ms(avg_first_token_ms, pivot_ms=260.0)
+        speed_score = (0.84 * ttc_score) + (0.16 * ttft_score)
+
+        reliability_score = (0.72 * success_rate) + (0.28 * json_rate)
+        quality_score = (0.75 * quality_rate) + (0.25 * image_rate)
+
+        raw_score = (0.82 * speed_score) + (0.13 * reliability_score) + (0.05 * quality_score)
+        # Hard penalty on unstable models so fast failures cannot rank high.
+        penalty = 0.20 + (0.80 * success_rate)
+        final = max(0.0, min(1.0, raw_score * penalty))
+        return round(final * 100.0, 2)
 
 
 async def main() -> None:

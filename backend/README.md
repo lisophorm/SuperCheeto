@@ -20,7 +20,9 @@ python -m app.main
 - `OPENAI_API_KEY` must be set in the environment or a `.env` file in `backend/`.
 - Optional overrides in `.env`:
   - `WS_HOST`, `WS_PORT`
-  - `AUDIO_SOURCE` (exact Pulse/PipeWire monitor source name to force capture device)
+  - `AUDIO_SOURCE` (exact Pulse/PipeWire monitor source name to force system-audio capture)
+  - `AUDIO_MIC_SOURCE` (exact Pulse/PipeWire source name to force microphone capture)
+  - `AUDIO_MODE` (`system` or `mic`, default `system`)
   - `STT_MODEL` (e.g. `base`, `small`)
   - `STT_DEVICE` (`cpu` or `cuda`), `STT_COMPUTE_TYPE` (`int8` for CPU)
   - `STT_VAD_FILTER` (`false` default; set `true` to suppress non-speech background)
@@ -29,8 +31,8 @@ python -m app.main
 - Requires PulseAudio or PipeWire with Pulse shim.
 - If routing is incorrect, install and run `pavucontrol` (`sudo apt install -y pavucontrol`) and switch the backend recording stream to a `Monitor of ...` source in the **Recording** tab.
 - Startup source selection priority:
-  1. `set_audio_source` WebSocket message from UI/client
-  2. `AUDIO_SOURCE` in environment
-  3. Active browser/media sink input monitor (YouTube/Firefox/Chrome/etc.)
-  4. Default sink monitor from `pactl info`
-- If no monitor sources are found, select one manually in the UI or pass it via WebSocket.
+  1. `set_audio_mode` + `set_audio_source` / `set_mic_source` WebSocket messages from UI/client
+  2. `AUDIO_SOURCE` / `AUDIO_MIC_SOURCE` in environment
+  3. Active browser/media sink input monitor (for system mode)
+  4. Default sink monitor and default source from `pactl info`
+- If no monitor/mic sources are found, select one manually in the UI or pass it via WebSocket.
