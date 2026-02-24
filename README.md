@@ -32,6 +32,26 @@ Other helpers:
 ./scripts/dev.sh restart
 ```
 
+### Launch production profile (no Vite/watch)
+```bash
+./scripts/prod.sh start
+```
+
+Stop/restart/status/logs:
+```bash
+./scripts/prod.sh stop
+./scripts/prod.sh restart
+./scripts/prod.sh status
+./scripts/prod.sh logs
+```
+
+Production notes:
+- Uses backend Python service + built Electron app (`dist` + `dist-electron`).
+- Frontend assets are built automatically only if missing; force rebuild with:
+  ```bash
+  PROD_FRONTEND_REBUILD=1 ./scripts/prod.sh start
+  ```
+
 Notes:
 - `./scripts/dev.sh stop` also cleans up lingering backend listeners on `127.0.0.1:${BACKEND_WS_PORT:-8765}` when no PID file is present.
 - `./scripts/dev.sh stop` also cleans up lingering frontend dev processes for this repo (Vite/Electron toolchain) when no PID file is present.

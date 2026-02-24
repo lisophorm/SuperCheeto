@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-02-23 (production launcher script)
+- User-visible:
+  - Added `scripts/prod.sh` with `start|stop|restart|status|logs` for a production-style run (backend + built Electron frontend).
+- Internal:
+  - `prod.sh` runs Electron from built artifacts (`dist-electron/main.cjs`) with `NODE_ENV=production` and no Vite dev server.
+  - Uses dedicated prod PID/log files under `.run/`:
+    - `prod-backend.pid`, `prod-frontend.pid`
+    - `prod-backend.log`, `prod-frontend.log`
+  - Can force frontend rebuild via `PROD_FRONTEND_REBUILD=1`.
+- How to test:
+  - `bash -n scripts/prod.sh`
+  - `./scripts/prod.sh status`
+  - `./scripts/prod.sh start` (on a free backend port) and confirm both services report running.
+
 ## 2026-02-23 (audio meter responsiveness tuning)
 - User-visible:
   - Audio level bars now react faster and with finer resolution (less “stale” jump behavior).

@@ -5,6 +5,7 @@
 - Frontend Electron app connects to backend and supports transcript selection + prompt execution.
 - Local audio capture + streaming transcription pipeline is wired through backend modules.
 - Root launcher script `scripts/dev.sh` can start/stop/restart/status/logs for backend and frontend together, and now force-cleans lingering backend listeners and frontend dev processes when PID files are missing.
+- Added `scripts/prod.sh` to run backend + production Electron frontend (no Vite/watch), with start/stop/restart/status/logs helpers.
 - Benchmark runner now supports multi-test batches (`tests x models x repeats`) and keeps benchmark history in frontend local storage.
 - Benchmark history now de-duplicates entries by `benchmarkId`, preventing duplicate run cards/react-key collisions when repeat `benchmark_complete` events arrive.
 - Settings page now shows "Latest Result Per Model" from the newest run where each model appears.
