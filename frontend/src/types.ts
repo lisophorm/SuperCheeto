@@ -126,3 +126,11 @@ export type QueryRequest = {
 }
 
 export type SelectionRange = { start: number; end: number } | null
+
+export type RagDocument = {
+  docId: string
+  filePath: string
+  title: string
+  chunkCount: number
+  updatedAt: number
+}

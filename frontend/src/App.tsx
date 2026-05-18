@@ -12,6 +12,7 @@ import {
   BenchmarkRun,
   OpenAIModelInfo,
   Preset,
+  RagDocument,
   SelectionRange,
   TranscriptSegment
 } from './types'
@@ -40,6 +41,8 @@ const PRESETS: Preset[] = [
   }
 ]
 
+const ANSWER_PRESET_ID = 'answer_question'
+
 const parseMaxRows = () => {
   const raw = Number(import.meta.env.VITE_MAX_ROWS)
   if (!Number.isFinite(raw) || raw <= 0) return 30
@@ -60,8 +63,19 @@ const parseSelectedTextRowsFocused = (collapsedRows: number) => {
 
 const BENCHMARK_HISTORY_STORAGE_KEY = 'benchmark-history.v1'
 const BENCHMARK_IMAGES_STORAGE_KEY = 'benchmark-images.v1'
+const UI_PREFERENCES_STORAGE_KEY = 'ui-preferences.v1'
 const MAX_BENCHMARK_HISTORY = 40
 const MAX_BENCHMARK_LIVE_LOGS = 500
+
+type UIPreferences = {
+  audioMode?: AudioStreamKind
+  selectedSystemAudioSource?: string
+  selectedMicAudioSource?: string
+  customInstruction?: string
+  selectedModel?: string
+  selectedPresetId?: string
+  includeScreenshotInQuery?: boolean
+}
 
 const speedScoreFromMs = (valueMs: number | null | undefined, pivotMs: number): number => {
   if (valueMs === null || valueMs === undefined || !Number.isFinite(valueMs) || valueMs <= 0) {
@@ -155,6 +169,52 @@ const loadBenchmarkImages = (): BenchmarkImageAsset[] => {
   }
 }
 
+const loadUiPreferences = (): UIPreferences => {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as UIPreferences
+    if (!parsed || typeof parsed !== 'object') return {}
+    const parsedPresetId = typeof parsed.selectedPresetId === 'string'
+      ? parsed.selectedPresetId
+      : undefined
+    const presetExists = parsedPresetId
+      ? PRESETS.some((preset) => preset.id === parsedPresetId)
+      : false
+    return {
+      audioMode: parsed.audioMode === 'mic' ? 'mic' : parsed.audioMode === 'system' ? 'system' : undefined,
+      selectedSystemAudioSource:
+        typeof parsed.selectedSystemAudioSource === 'string' ? parsed.selectedSystemAudioSource : undefined,
+      selectedMicAudioSource:
+        typeof parsed.selectedMicAudioSource === 'string' ? parsed.selectedMicAudioSource : undefined,
+      customInstruction: typeof parsed.customInstruction === 'string' ? parsed.customInstruction : undefined,
+      selectedModel: typeof parsed.selectedModel === 'string' ? parsed.selectedModel : undefined,
+      selectedPresetId: presetExists ? parsedPresetId : undefined,
+      includeScreenshotInQuery:
+        typeof parsed.includeScreenshotInQuery === 'boolean' ? parsed.includeScreenshotInQuery : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+const resolvePreferredOption = (
+  currentValue: string,
+  options: string[],
+  ...fallbacks: Array<string | null | undefined>
+): string => {
+  if (currentValue && options.includes(currentValue)) {
+    return currentValue
+  }
+  for (const fallback of fallbacks) {
+    if (fallback && options.includes(fallback)) {
+      return fallback
+    }
+  }
+  return options[0] || ''
+}
+
 type LiveRow = {
   id: number
   text: string
@@ -174,6 +234,8 @@ type QueryRunPayload = {
 }
 
 const App: React.FC = () => {
+  const [storedUiPreferences] = useState<UIPreferences>(() => loadUiPreferences())
+  const hasStoredAudioMode = storedUiPreferences.audioMode === 'mic' || storedUiPreferences.audioMode === 'system'
   const [activePage, setActivePage] = useState<'desk' | 'settings'>('desk')
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [liveText, setLiveText] = useState('')
@@ -185,39 +247,49 @@ const App: React.FC = () => {
   const [isQuerying, setIsQuerying] = useState(false)
   const [status, setStatus] = useState('Connecting…')
   const [isRunning, setIsRunning] = useState(false)
-  const [audioMode, setAudioMode] = useState<AudioStreamKind>('system')
+  const [audioMode, setAudioMode] = useState<AudioStreamKind>(storedUiPreferences.audioMode || 'system')
   const [systemAudioLevel, setSystemAudioLevel] = useState(0)
   const [systemAudioRms, setSystemAudioRms] = useState(0)
   const [systemAudioSources, setSystemAudioSources] = useState<string[]>([])
-  const [selectedSystemAudioSource, setSelectedSystemAudioSource] = useState('')
+  const [selectedSystemAudioSource, setSelectedSystemAudioSource] = useState(storedUiPreferences.selectedSystemAudioSource || '')
   const [micAudioLevel, setMicAudioLevel] = useState(0)
   const [micAudioRms, setMicAudioRms] = useState(0)
   const [micAudioSources, setMicAudioSources] = useState<string[]>([])
-  const [selectedMicAudioSource, setSelectedMicAudioSource] = useState('')
-  const [customInstruction, setCustomInstruction] = useState('')
+  const [selectedMicAudioSource, setSelectedMicAudioSource] = useState(storedUiPreferences.selectedMicAudioSource || '')
+  const [customInstruction, setCustomInstruction] = useState(storedUiPreferences.customInstruction || '')
   const [models, setModels] = useState<string[]>([])
   const [modelDetails, setModelDetails] = useState<OpenAIModelInfo[]>([])
-  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedModel, setSelectedModel] = useState(storedUiPreferences.selectedModel || '')
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null)
-  const [includeScreenshotInQuery, setIncludeScreenshotInQuery] = useState(false)
+  const [includeScreenshotInQuery, setIncludeScreenshotInQuery] = useState(storedUiPreferences.includeScreenshotInQuery || false)
   const [lastQueryLatencyMs, setLastQueryLatencyMs] = useState<number | null>(null)
   const [lastResponseModel, setLastResponseModel] = useState<string>('')
   const [lastScreenshotUsed, setLastScreenshotUsed] = useState(false)
   const [activeQueryRequestId, setActiveQueryRequestId] = useState<string | null>(null)
   const [lastQueryPayload, setLastQueryPayload] = useState<QueryRunPayload | null>(null)
+  const [ragDocuments, setRagDocuments] = useState<RagDocument[]>([])
+  const [ragNotice, setRagNotice] = useState('')
   const [benchmarkRunning, setBenchmarkRunning] = useState(false)
   const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress | null>(null)
   const [activeBenchmarkId, setActiveBenchmarkId] = useState<string | null>(null)
   const [benchmarkLiveLogs, setBenchmarkLiveLogs] = useState<BenchmarkLiveLog[]>([])
   const [benchmarkHistory, setBenchmarkHistory] = useState<BenchmarkRun[]>(() => loadBenchmarkHistory())
   const [benchmarkImages, setBenchmarkImages] = useState<BenchmarkImageAsset[]>(() => loadBenchmarkImages())
-  const [selectedPresetId, setSelectedPresetId] = useState(PRESETS[0].id)
+  const [selectedPresetId, setSelectedPresetId] = useState(storedUiPreferences.selectedPresetId || PRESETS[0].id)
   const activeBenchmarkIdRef = useRef<string | null>(null)
   const activeQueryRequestIdRef = useRef<string | null>(null)
+  const selectedTextDraftEditedRef = useRef(false)
+  const lastSelectionKeyRef = useRef('')
   const maxRows = parseMaxRows()
   const selectedTextRowsCollapsed = parseSelectedTextRowsCollapsed()
   const selectedTextRowsFocused = parseSelectedTextRowsFocused(selectedTextRowsCollapsed)
   const canResetSelectedTextDraft = selectedTextDraft !== selectedText
+
+  const selectionKeyFor = (text: string, range: SelectionRange): string => {
+    const start = range?.start ?? ''
+    const end = range?.end ?? ''
+    return `${start}|${end}|${text}`
+  }
 
   const client = useMemo(() => {
     return new WSClient('ws://127.0.0.1:8765', {
@@ -236,6 +308,7 @@ const App: React.FC = () => {
           client.send({ type: 'get_audio_sources' })
           client.send({ type: 'get_models' })
           client.send({ type: 'get_model_details' })
+          client.send({ type: 'rag_list' })
         }
       },
       onLive: (payload) => {
@@ -272,35 +345,54 @@ const App: React.FC = () => {
         const micSources = payload.micSources || []
         setSystemAudioSources(monitorSources)
         setMicAudioSources(micSources)
-        if (payload.selectedMode) {
-          setAudioMode(payload.selectedMode)
-        }
-        if (payload.selectedMonitorSource) {
-          setSelectedSystemAudioSource(payload.selectedMonitorSource)
-        } else if (payload.selectedSource) {
-          setSelectedSystemAudioSource(payload.selectedSource)
-        } else if (payload.defaultMonitorSource) {
-          setSelectedSystemAudioSource(payload.defaultMonitorSource)
-        } else if (payload.defaultSource) {
-          setSelectedSystemAudioSource(payload.defaultSource)
-        } else if (monitorSources.length > 0) {
-          setSelectedSystemAudioSource(monitorSources[0])
-        }
-        if (payload.selectedMicSource) {
-          setSelectedMicAudioSource(payload.selectedMicSource)
-        } else if (payload.defaultMicSource) {
-          setSelectedMicAudioSource(payload.defaultMicSource)
-        } else if (micSources.length > 0) {
-          setSelectedMicAudioSource(micSources[0])
-        }
+        setAudioMode((prev) => {
+          if (!hasStoredAudioMode && payload.selectedMode) {
+            return payload.selectedMode === 'mic' ? 'mic' : 'system'
+          }
+          const next = prev === 'mic' || prev === 'system' ? prev : 'system'
+          if (payload.selectedMode && payload.selectedMode !== next) {
+            client.send({ type: 'set_audio_mode', mode: next })
+          }
+          return next
+        })
+        setSelectedSystemAudioSource((prev) => {
+          const next = resolvePreferredOption(
+            prev,
+            monitorSources,
+            payload.selectedMonitorSource,
+            payload.selectedSource,
+            payload.defaultMonitorSource,
+            payload.defaultSource
+          )
+          const selectedByBackend = payload.selectedMonitorSource || payload.selectedSource || ''
+          if (next && selectedByBackend !== next) {
+            client.send({ type: 'set_audio_source', sourceName: next })
+          }
+          return next
+        })
+        setSelectedMicAudioSource((prev) => {
+          const next = resolvePreferredOption(prev, micSources, payload.selectedMicSource, payload.defaultMicSource)
+          if (next && payload.selectedMicSource !== next) {
+            client.send({ type: 'set_mic_source', sourceName: next })
+          }
+          return next
+        })
       },
       onModelsList: (payload) => {
-        setModels(payload.models || [])
-        if (payload.selectedModel) {
-          setSelectedModel(payload.selectedModel)
-        } else if ((payload.models || []).length > 0 && !selectedModel) {
-          setSelectedModel(payload.models[0])
-        }
+        const nextModels = payload.models || []
+        setModels(nextModels)
+        setSelectedModel((prev) => {
+          if (prev && nextModels.includes(prev)) {
+            return prev
+          }
+          if (payload.selectedModel && nextModels.includes(payload.selectedModel)) {
+            return payload.selectedModel
+          }
+          if (nextModels.length > 0) {
+            return nextModels[0]
+          }
+          return ''
+        })
       },
       onModelsDetails: (payload) => {
         setModelDetails(payload.models || [])
@@ -345,6 +437,19 @@ const App: React.FC = () => {
         setLastQueryLatencyMs(typeof payload.latencyMs === 'number' ? payload.latencyMs : null)
         setLastResponseModel(payload.model || '')
         setLastScreenshotUsed(Boolean(payload.screenshotUsed))
+        const ragChunksUsed = typeof payload.ragChunksUsed === 'number' ? payload.ragChunksUsed : 0
+        if (ragChunksUsed > 0) {
+          setRagNotice(`Used ${ragChunksUsed} retrieved chunk(s) from local RAG documents for the last answer.`)
+        }
+      },
+      onRagDocuments: (payload) => {
+        setRagDocuments(Array.isArray(payload.documents) ? payload.documents : [])
+      },
+      onRagIngestResult: (payload) => {
+        const errors = Array.isArray(payload.errors) ? payload.errors.filter(Boolean) : []
+        const summary = `RAG ingest: +${payload.ingested} new, ${payload.updated} updated, ${payload.skipped} unchanged, ${payload.failed} failed.`
+        const suffix = errors.length > 0 ? ` First error: ${errors[0]}` : ''
+        setRagNotice(`${summary}${suffix}`)
       },
       onBenchmarkProgress: (payload) => {
         setBenchmarkRunning(true)
@@ -464,6 +569,30 @@ const App: React.FC = () => {
     window.localStorage.setItem(BENCHMARK_IMAGES_STORAGE_KEY, JSON.stringify(benchmarkImages))
   }, [benchmarkImages])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(
+      UI_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        audioMode,
+        selectedSystemAudioSource,
+        selectedMicAudioSource,
+        customInstruction,
+        selectedModel,
+        selectedPresetId,
+        includeScreenshotInQuery
+      } satisfies UIPreferences)
+    )
+  }, [
+    audioMode,
+    selectedSystemAudioSource,
+    selectedMicAudioSource,
+    customInstruction,
+    selectedModel,
+    selectedPresetId,
+    includeScreenshotInQuery
+  ])
+
   const canRun = selectedTextDraft.trim().length > 0
 
   const executeQuery = (query: QueryRunPayload) => {
@@ -498,6 +627,21 @@ const App: React.FC = () => {
     executeQuery({
       presetId: selectedPresetId,
       customInstruction: null,
+      selectedText: selectedTextDraft,
+      selectionTimeRange: trimmedDraft && trimmedDraft === trimmedSelection ? selectionRange : null,
+      model: selectedModel || null,
+      includeScreenshot: includeScreenshotInQuery,
+      screenshotDataUrl: includeScreenshotInQuery ? screenshotDataUrl : null
+    })
+  }
+
+  const runAnswer = () => {
+    const trimmedSelection = selectedText.trim()
+    const trimmedDraft = selectedTextDraft.trim()
+    const trimmedInstruction = customInstruction.trim()
+    executeQuery({
+      presetId: trimmedInstruction ? null : ANSWER_PRESET_ID,
+      customInstruction: trimmedInstruction || null,
       selectedText: selectedTextDraft,
       selectionTimeRange: trimmedDraft && trimmedDraft === trimmedSelection ? selectionRange : null,
       model: selectedModel || null,
@@ -559,6 +703,8 @@ const App: React.FC = () => {
     setLiveRows([])
     setSelectedText('')
     setSelectedTextDraft('')
+    selectedTextDraftEditedRef.current = false
+    lastSelectionKeyRef.current = ''
     setSelectionRange(null)
     client.send({ type: 'clear_transcript' })
   }
@@ -586,11 +732,16 @@ const App: React.FC = () => {
     client.send({ type: 'set_audio_mode', mode })
   }
 
+  const toggleAudioMode = () => {
+    changeAudioMode(audioMode === 'mic' ? 'system' : 'mic')
+  }
+
   const captureScreen = async () => {
     try {
       const dataUrl = await window.electronAPI?.captureScreen?.()
       if (dataUrl) {
         setScreenshotDataUrl(dataUrl)
+        setIncludeScreenshotInQuery(true)
       } else {
         setStatus('error: screen capture returned no image')
       }
@@ -663,21 +814,10 @@ const App: React.FC = () => {
             onRefreshAudioSources={refreshAudioSources}
             onStart={startTranscription}
             onStop={stopTranscription}
+            onToggleAudioMode={toggleAudioMode}
           />
 
           <div className="content">
-            <TranscriptPane
-              segments={segments}
-              liveText={liveText}
-              liveRows={liveRows}
-              maxRows={maxRows}
-              onSelectionChange={(text, range) => {
-                setSelectedText(text)
-                setSelectedTextDraft(text)
-                setSelectionRange(range)
-              }}
-              onClear={clearTranscript}
-            />
             <OutputPane
               output={output}
               isQuerying={isQuerying}
@@ -686,16 +826,45 @@ const App: React.FC = () => {
               onStopQuery={stopQuery}
               onRunAgain={runLastQueryAgain}
               screenshotDataUrl={screenshotDataUrl}
-              onClearScreenshot={() => setScreenshotDataUrl(null)}
+              onClearScreenshot={() => {
+                setScreenshotDataUrl(null)
+                setIncludeScreenshotInQuery(false)
+              }}
               latencyMs={lastQueryLatencyMs}
               model={lastResponseModel}
               screenshotUsed={lastScreenshotUsed}
               selectedTextDraft={selectedTextDraft}
-              onSelectedTextDraftChange={setSelectedTextDraft}
-              onResetSelectedTextDraft={() => setSelectedTextDraft(selectedText)}
+              onSelectedTextDraftChange={(value) => {
+                setSelectedTextDraft(value)
+                selectedTextDraftEditedRef.current = true
+              }}
+              onAnswer={runAnswer}
+              canAnswer={canRun}
+              onResetSelectedTextDraft={() => {
+                setSelectedTextDraft(selectedText)
+                selectedTextDraftEditedRef.current = false
+              }}
               canResetSelectedTextDraft={canResetSelectedTextDraft}
               collapsedRows={selectedTextRowsCollapsed}
               focusedRows={selectedTextRowsFocused}
+            />
+            <TranscriptPane
+              segments={segments}
+              liveText={liveText}
+              liveRows={liveRows}
+              maxRows={maxRows}
+              onSelectionChange={(text, range) => {
+                const nextSelectionKey = selectionKeyFor(text, range)
+                const selectionChanged = nextSelectionKey !== lastSelectionKeyRef.current
+                setSelectedText(text)
+                if (!selectedTextDraftEditedRef.current || selectionChanged) {
+                  setSelectedTextDraft(text)
+                  selectedTextDraftEditedRef.current = false
+                }
+                lastSelectionKeyRef.current = nextSelectionKey
+                setSelectionRange(range)
+              }}
+              onClear={clearTranscript}
             />
           </div>
 
@@ -721,6 +890,11 @@ const App: React.FC = () => {
           benchmarkLiveLogs={benchmarkLiveLogs}
           benchmarkHistory={benchmarkHistory}
           benchmarkImages={benchmarkImages}
+          ragDocuments={ragDocuments}
+          ragNotice={ragNotice}
+          onRagIngest={(paths) => client.send({ type: 'rag_ingest', paths })}
+          onRagRefresh={() => client.send({ type: 'rag_list' })}
+          onRagClear={() => client.send({ type: 'rag_clear' })}
           onUpsertBenchmarkImage={(image) => {
             setBenchmarkImages((prev) => {
               const next = prev.filter((item) => item.refId !== image.refId)

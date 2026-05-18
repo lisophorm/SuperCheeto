@@ -76,6 +76,9 @@ class StreamingTranscriber:
         device: str,
         compute_type: str,
         vad_filter: bool,
+        language: Optional[str],
+        min_decode_rms: float,
+        no_vad_fallback_min_rms: float,
         partial_window: float,
         partial_interval: float,
         final_window: float,
@@ -89,6 +92,9 @@ class StreamingTranscriber:
         self.device = device
         self.compute_type = compute_type
         self.vad_filter = vad_filter
+        self.language = self._normalize_language(language)
+        self.min_decode_rms = max(0.0, min_decode_rms)
+        self.no_vad_fallback_min_rms = max(0.0, no_vad_fallback_min_rms)
         self.partial_window = partial_window
         self.partial_interval = partial_interval
         self.final_window = final_window
@@ -105,6 +111,22 @@ class StreamingTranscriber:
         self._last_final_time = 0.0
         self._last_live_text = ""
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _normalize_language(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().lower()
+        return normalized or None
+
+    def set_language(self, language: Optional[str]) -> None:
+        self.language = self._normalize_language(language)
+
+    @staticmethod
+    def _audio_rms(audio: np.ndarray) -> float:
+        if audio.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(audio))))
 
     def reset_state(self) -> None:
         self._buffer = AudioBuffer(self.sample_rate, max_seconds=self._max_buffer_seconds)
@@ -157,6 +179,11 @@ class StreamingTranscriber:
             current_time = self._buffer.current_time
         if audio.size == 0:
             return
+        if self._audio_rms(audio) < self.min_decode_rms:
+            if self._last_live_text:
+                self._last_live_text = ""
+                await self.on_live("", current_time)
+            return
         text = await asyncio.to_thread(self._decode_text, audio)
         if text and text != self._last_live_text:
             self._last_live_text = text
@@ -167,6 +194,8 @@ class StreamingTranscriber:
             audio = self._buffer.get_last_seconds(self.final_window)
             current_time = self._buffer.current_time
         if audio.size == 0:
+            return
+        if self._audio_rms(audio) < self.min_decode_rms:
             return
         segments = await asyncio.to_thread(self._decode_segments, audio)
         if not segments:
@@ -196,12 +225,17 @@ class StreamingTranscriber:
 
     def _decode_segments(self, audio: np.ndarray):
         assert self._model is not None
+        audio_rms = self._audio_rms(audio)
+        transcribe_kwargs = {
+            "beam_size": 1,
+            "vad_filter": self.vad_filter,
+            # Reduces repetition/hallucination loops on low-information windows.
+            "condition_on_previous_text": False,
+        }
+        if self.language:
+            transcribe_kwargs["language"] = self.language
         try:
-            segments, _info = self._model.transcribe(
-                audio,
-                beam_size=1,
-                vad_filter=self.vad_filter,
-            )
+            segments, _info = self._model.transcribe(audio, **transcribe_kwargs)
         except Exception:
             if self.device != "cuda":
                 raise
@@ -210,18 +244,14 @@ class StreamingTranscriber:
             if self.compute_type == "float16":
                 self.compute_type = "int8"
             self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
-            segments, _info = self._model.transcribe(
-                audio,
-                beam_size=1,
-                vad_filter=self.vad_filter,
-            )
+            segments, _info = self._model.transcribe(audio, **transcribe_kwargs)
         parsed = list(segments)
         if parsed or not self.vad_filter:
             return parsed
+        if audio_rms < self.no_vad_fallback_min_rms:
+            return parsed
         # Fallback for low-volume or compressed system audio where VAD is overly aggressive.
-        segments_no_vad, _info = self._model.transcribe(
-            audio,
-            beam_size=1,
-            vad_filter=False,
-        )
+        fallback_kwargs = dict(transcribe_kwargs)
+        fallback_kwargs["vad_filter"] = False
+        segments_no_vad, _info = self._model.transcribe(audio, **fallback_kwargs)
         return list(segments_no_vad)

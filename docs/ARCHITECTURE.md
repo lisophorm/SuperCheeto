@@ -4,6 +4,7 @@
 - System audio output (monitor) or internal microphone input is captured locally on Ubuntu from Pulse/PipeWire sources.
 - Backend (`backend/app`) ingests PCM audio, transcribes with faster-whisper, and emits transcript updates over WebSocket.
 - Frontend (`frontend/`) receives live/final transcript events, renders selectable text, and sends prompt queries to backend.
+- Backend can ingest local documents into a SQLite vector store and retrieve relevant chunks during queries.
 - Backend sends prompt responses back to frontend for display.
 
 ## Components and responsibilities
@@ -12,6 +13,7 @@
 - `backend/app/transcript.py`: transcript segment storage and context window handling.
 - `backend/app/main.py`: active audio mode/source orchestration, runtime source switching, and source-tagged WS broadcasts.
 - `backend/app/openai_client.py`: prompt execution against OpenAI text model.
+- `backend/app/rag_store.py`: local SQLite vector DB ingestion/search for `.txt`, `.md`, `.pdf`, `.docx`.
 - `backend/app/benchmark_harness.py`: standardized benchmark instruction and per-test payload formatting.
 - `backend/app/model_pricing.py`: model token pricing catalog + environment override for benchmark cost estimation.
 - `backend/app/ws_server.py`: WebSocket message routing and connection lifecycle.
@@ -24,4 +26,5 @@
 - Local Python 3.11+ environment for backend dependencies.
 - Node.js/npm environment for Electron + Vite frontend.
 - `OPENAI_API_KEY` set in environment or `backend/.env`.
+- RAG embeddings use OpenAI embeddings API by default; vectors persist locally at `RAG_DB_PATH`.
 - When switching between monitor/mic while transcribing, backend restarts only capture/transcription loops and reuses the loaded STT model to minimize switch delay.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -17,8 +18,18 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _default_compute_type() -> str:
-    configured_device = os.getenv("STT_DEVICE", "cuda").strip().lower()
+    configured_device = os.getenv("STT_DEVICE", "cpu").strip().lower()
     return "float16" if configured_device == "cuda" else "int8"
+
+
+def _env_str_or_none(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        value = default
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized if normalized else None
 
 
 @dataclass(frozen=True)
@@ -37,9 +48,14 @@ class Settings:
     audio_level_peak_reference: float = float(os.getenv("AUDIO_LEVEL_PEAK_REF", "0.22"))
 
     stt_model: str = os.getenv("STT_MODEL", "tiny")
-    stt_device: str = os.getenv("STT_DEVICE", "cuda")
+    stt_device: str = os.getenv("STT_DEVICE", "cpu")
     stt_compute_type: str = os.getenv("STT_COMPUTE_TYPE", _default_compute_type())
     stt_vad_filter: bool = _env_bool("STT_VAD_FILTER", False)
+    stt_language: str | None = _env_str_or_none("STT_LANGUAGE")
+    stt_system_language: str | None = _env_str_or_none("STT_SYSTEM_LANGUAGE")
+    stt_mic_language: str | None = _env_str_or_none("STT_MIC_LANGUAGE", "en")
+    stt_min_decode_rms: float = float(os.getenv("STT_MIN_DECODE_RMS", "0.0010"))
+    stt_no_vad_fallback_min_rms: float = float(os.getenv("STT_NO_VAD_FALLBACK_MIN_RMS", "0.0025"))
 
     partial_window_seconds: float = float(os.getenv("STT_PARTIAL_WINDOW", "2.0"))
     partial_interval_seconds: float = float(os.getenv("STT_PARTIAL_INTERVAL", "0.25"))
@@ -52,3 +68,11 @@ class Settings:
 
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
     openai_timeout_seconds: float = float(os.getenv("OPENAI_TIMEOUT", "30"))
+    rag_db_path: str = os.getenv(
+        "RAG_DB_PATH",
+        str(Path(__file__).resolve().parents[1] / "data" / "rag.sqlite"),
+    )
+    rag_embedding_model: str = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small")
+    rag_top_k: int = int(os.getenv("RAG_TOP_K", "6"))
+    rag_chunk_size_chars: int = int(os.getenv("RAG_CHUNK_SIZE_CHARS", "1200"))
+    rag_chunk_overlap_chars: int = int(os.getenv("RAG_CHUNK_OVERLAP_CHARS", "180"))

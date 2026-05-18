@@ -22,7 +22,11 @@
 - `query_chunk`
   - Payload: `{ "requestId"?: string, "delta": string }`
 - `query_response`
-  - Payload: `{ "requestId": string, "text": string, "latencyMs"?: number, "model"?: string, "screenshotUsed"?: boolean }`
+  - Payload: `{ "requestId": string, "text": string, "latencyMs"?: number, "model"?: string, "screenshotUsed"?: boolean, "ragChunksUsed"?: number, "ragSources"?: string[] }`
+- `rag_documents`
+  - Payload: `{ "documents": Array<{ "docId": string, "filePath": string, "title": string, "chunkCount": number, "updatedAt": number }> }`
+- `rag_ingest_result`
+  - Payload: `{ "ingested": number, "updated": number, "skipped": number, "failed": number, "errors"?: string[] }`
 - `error`
   - Payload: `{ "message": string }`
 
@@ -43,6 +47,13 @@
 - `cancel_query`
   - Payload:
     - `{ "requestId"?: string }`
+- `rag_ingest`
+  - Payload:
+    - `{ "paths": string[] }` (absolute file paths and/or directories)
+- `rag_list`
+  - Payload: none
+- `rag_clear`
+  - Payload: none
 - `run_benchmark`
   - Payload:
     - `{ "benchmarkId": string, "models": string[], "instruction": string, "tests": Array<{ "testId": string, "userPrompt": string, "imageRef"?: string|null, "imageDataUrl"?: string|null }>, "repeats": number }`
@@ -74,6 +85,12 @@
 - Interactive `run_query` now uses Responses API streaming by default.
 - Frontend receives incremental text via `query_chunk` and then a final `query_response`.
 - `cancel_query` stops an in-flight query; frontend receives `query_state` with `running=false` and `cancelled=true`.
+- When indexed documents exist, backend injects top-K retrieved chunks from local RAG store into query context before OpenAI call.
+
+## RAG notes
+- RAG vectors are persisted in local SQLite (`RAG_DB_PATH`), not browser storage.
+- Default embedding model is `text-embedding-3-small` (`RAG_EMBEDDING_MODEL`).
+- Supported ingestion file types: `.txt`, `.md`, `.pdf`, `.docx`.
 
 ## Audio mode notes
 - Backend discovers and broadcasts monitor (system-output) sources and microphone sources separately.

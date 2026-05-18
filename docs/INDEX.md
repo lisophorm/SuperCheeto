@@ -13,7 +13,7 @@
 - [ADR index](adr/INDEX.md)
 
 ## Data / persistence
-- No database currently. Add `docs/db/INDEX.md` when persistence is introduced.
+- [DB index](db/INDEX.md)
 
 ## Release notes
 - [Changelog](CHANGELOG.md)

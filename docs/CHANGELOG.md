@@ -1,5 +1,208 @@
 # Changelog
 
+## 2026-03-10 (desk pane order: response left)
+- User-visible:
+  - Swapped the main desk panes so `Response` appears on the left and `Transcript` on the right.
+- Internal:
+  - Reordered the desk page pane rendering in the main app layout.
+- How to test:
+  - `cd frontend && npm run build`
+  - Open the desk page and confirm `Response` is the left column on desktop widths.
+
+## 2026-03-10 (answer-action custom-instruction + split top controls)
+- User-visible:
+  - The inline `Answer` button now uses the custom instruction when one is filled in; otherwise it falls back to `Answer the question`.
+  - The top desk controls are now split into stacked vertical `Audio` and `AI` blocks.
+  - Removed the extra `Audio`/`AI` helper copy above those controls, and placed `Input mode` beside the audio-mode switch.
+- Internal:
+  - Added a dedicated `runAnswer` flow in the renderer rather than routing the inline answer action through the generic preset handler.
+  - Refactored prompt-bar layout/CSS into two grouped panels for clearer control separation.
+- How to test:
+  - `cd frontend && npm run build`
+  - Enter a custom instruction, click `Answer`, and confirm the backend request uses `customInstruction`.
+  - Clear the custom instruction, click `Answer`, and confirm it behaves like the built-in answer preset.
+  - Verify the top controls render as stacked vertical `Audio` and `AI` blocks.
+
+## 2026-03-10 (cpu-safe stt defaults for local runs)
+- User-visible:
+  - Fixed local transcription startup on non-CUDA machines by defaulting STT to CPU-safe settings instead of trying to load `libcublas.so.12`.
+- Internal:
+  - Changed backend STT defaults from `cuda/float16` to `cpu/int8`.
+  - Updated backend setup docs and env example to reflect CPU-first local development.
+- How to test:
+  - Remove any `STT_DEVICE=cuda` override from `backend/.env.local` or set `STT_DEVICE=cpu`.
+  - `./scripts/dev.sh start`
+  - Start transcription and confirm the backend no longer emits `libcublas.so.12` errors.
+
+## 2026-03-10 (vite react preamble black-screen fix)
+- User-visible:
+  - Fixed the Electron dev black screen caused by `@vitejs/plugin-react can't detect preamble` after launching `./scripts/dev.sh start`.
+- Internal:
+  - Replaced the static renderer CSP meta tag with a build-only CSP injected by Vite.
+  - Electron main process now skips CSP enforcement in local dev and only applies the stricter policy for packaged/prod loads.
+- How to test:
+  - `./scripts/dev.sh stop`
+  - `./scripts/dev.sh start`
+  - Confirm the Electron window renders instead of staying black and the DevTools console no longer shows the preamble error.
+
+## 2026-02-27 (webcam eye-tracking prototype)
+- User-visible:
+  - Added a runnable webcam eye-tracking prototype that displays coarse gaze direction labels in real time.
+  - Added run instructions to root/backend READMEs.
+- Internal:
+  - Added `backend/app/eye_tracking_prototype.py` using OpenCV + MediaPipe face mesh iris landmarks.
+  - Added `opencv-python` and `mediapipe` to backend dependencies.
+- How to test:
+  - `python -m compileall backend/app/eye_tracking_prototype.py`
+  - `cd backend && source .venv/bin/activate && python -m app.eye_tracking_prototype`
+  - Confirm webcam window opens, iris landmarks render, and label changes between `left/right/up/down/center`.
+
+## 2026-02-26 (local RAG document ingestion + retrieval)
+- User-visible:
+  - Added local RAG document ingestion controls in Settings (`Ingest`, `Refresh list`, `Clear RAG DB`).
+  - Queries can now use indexed CV/doc chunks automatically; response metadata includes RAG chunk usage count.
+- Internal:
+  - Added `backend/app/rag_store.py` with local SQLite vector persistence (`documents` + `chunks` tables).
+  - Added OpenAI embedding client support (`/embeddings`) and retrieval injection into `run_query` context.
+  - Added new WS messages: `rag_ingest`, `rag_list`, `rag_clear`, `rag_documents`, `rag_ingest_result`.
+  - Added DB docs (`docs/db/INDEX.md`, `docs/db/SCHEMA.md`) and ADR 0008.
+- How to test:
+  - `python -m compileall backend/app`
+  - `cd frontend && npm run build`
+  - Open Settings, ingest a known CV/document path, confirm it appears in indexed docs table.
+  - Ask a question tied to that document and confirm query runs with RAG notice.
+
+## 2026-02-25 (prod renderer blank-screen fix)
+- User-visible:
+  - Fixed `./scripts/prod.sh start` showing a black frontend window in production mode.
+- Internal:
+  - Set Vite `base: './'` so production `dist/index.html` uses relative asset URLs (`./assets/...`) compatible with Electron `loadFile(...)`.
+  - Keeps CSP hardening in place while restoring packaged renderer asset loading.
+- How to test:
+  - `cd frontend && npm run build`
+  - `./scripts/prod.sh stop`
+  - `./scripts/prod.sh start`
+  - Confirm frontend renders UI instead of a blank/black window.
+
+## 2026-02-25 (electron csp hardening)
+- User-visible:
+  - Removed the Electron development security warning about missing/insecure Content Security Policy.
+- Internal:
+  - Added an explicit CSP header in Electron main process via `session.defaultSession.webRequest.onHeadersReceived`.
+  - Added matching CSP meta tag to `frontend/index.html` for packaged file loads.
+  - CSP disallows `unsafe-eval` and constrains script/object/frame sources while keeping required WS/HTTP connectivity.
+- How to test:
+  - `cd frontend && npm run build`
+  - `cd frontend && npm run dev`
+  - Open Electron DevTools console and confirm the CSP warning no longer appears.
+
+## 2026-02-24 (inline answer action + smaller response text)
+- User-visible:
+  - Added an `Answer` button in the selected-text editor header (same row as `Reset to selection`) so you can run the preset answer without scrolling to top controls.
+  - Response text rendering is now 40% smaller.
+- Internal:
+  - Output pane now accepts `onAnswer`/`canAnswer` handlers and wires the new button to the existing preset-run path.
+  - Added `selected-text-editor-actions` layout styles and reduced `.output-body pre` font size.
+- How to test:
+  - `cd frontend && npm run build`
+  - On Desk page, type in the editable selected-text box and click `Answer` next to `Reset to selection`; verify query runs.
+  - Verify response text appears visibly smaller than before.
+
+## 2026-02-24 (query input integrity: draft text + screenshot inclusion)
+- User-visible:
+  - Fixed a bug where manually edited selected text could be overwritten by stale transcript selection updates before sending a query.
+  - Capturing a screenshot now automatically enables screenshot inclusion for the next query.
+  - Clearing screenshot preview now disables screenshot inclusion to avoid sending empty screenshot flags.
+- Internal:
+  - Added selection-key and draft-edit guards in frontend query input flow so repeated `selectionchange` events do not clobber user edits.
+  - Updated screenshot capture/clear handlers to keep `includeScreenshotInQuery` synchronized with preview state.
+- How to test:
+  - `cd frontend && npm run build`
+  - Select transcript text, edit it manually, then run preset/custom while transcript updates continue; verify sent answer follows edited text.
+  - Capture screen and run query; verify response meta shows `Screenshot sent: yes`.
+
+## 2026-02-24 (env example updates for STT tuning)
+- User-visible:
+  - Added missing STT language and silence-guard variables to `backend/.env.example`.
+- Internal:
+  - Documented `STT_MIC_LANGUAGE`, `STT_SYSTEM_LANGUAGE`, `STT_LANGUAGE`, `STT_MIN_DECODE_RMS`, and `STT_NO_VAD_FALLBACK_MIN_RMS` in the env template.
+- How to test:
+  - Open `backend/.env.example` and verify the new STT variables are listed.
+
+## 2026-02-24 (silence hallucination guard for STT)
+- User-visible:
+  - Reduced false transcript rows on silence (for example repeated `You` while audio meter is effectively zero).
+- Internal:
+  - Added `STT_MIN_DECODE_RMS` silence gate to skip partial/final decoding on very low-energy windows.
+  - Added `STT_NO_VAD_FALLBACK_MIN_RMS` so no-VAD fallback is only used when audio energy is high enough.
+  - Whisper decode now uses `condition_on_previous_text=False` to reduce repetition loops on low-information audio.
+- How to test:
+  - `python -m compileall backend/app`
+  - Start transcription in a quiet room/system silence and verify repeated fake rows no longer appear.
+  - If speech gets clipped on very quiet input, lower `STT_MIN_DECODE_RMS` slightly (for example `0.0007`).
+
+## 2026-02-24 (mic startup source fallback + recording indicator)
+- User-visible:
+  - Fixed a startup issue where microphone mode could fail to transcribe until switching modes.
+  - Added a blinking red dot near the active volume meter while transcription is running.
+- Internal:
+  - Backend now validates requested monitor/mic sources against currently available sources and auto-falls back to valid defaults when saved source names are stale.
+  - Source validation is applied both in `audio_sources` broadcasts and `start_transcription`.
+  - Prompt bar meter labels now render per-mode recording activity dots with a blink animation.
+- How to test:
+  - `python -m compileall backend/app`
+  - `cd frontend && npm run build`
+  - Launch in mic mode and press `Start`; verify mic transcribes immediately without requiring mode toggles.
+  - While transcribing, verify the active mode meter shows a blinking red dot.
+
+## 2026-02-24 (mic language-hint stabilization)
+- User-visible:
+  - Microphone transcription is now more stable for accented English by default, reducing random language switches between rows.
+  - Running transcription status now shows the active STT language mode (`language: en` or `language: auto`).
+- Internal:
+  - Added mode-specific STT language hints:
+    - `STT_MIC_LANGUAGE` (default `en`)
+    - `STT_SYSTEM_LANGUAGE` (default auto)
+    - `STT_LANGUAGE` (global fallback)
+  - Faster-whisper transcribe calls now pass configured language hints and keep the setting in sync when switching system/mic modes.
+- How to test:
+  - `python -m compileall backend/app`
+  - Start app in microphone mode and verify transcript rows no longer bounce across random languages.
+  - Optionally set `STT_MIC_LANGUAGE=it` in `backend/.env`, restart backend, and verify mic transcription uses Italian.
+
+## 2026-02-24 (persisted desk preferences + quick input switch)
+- User-visible:
+  - Desk selections now survive app restart (input mode, sources, model, preset, custom instruction, and screenshot-toggle choice).
+  - Added a `Switch to ...` button next to `Start/Stop` for quick mic/system input toggling.
+  - Switching inputs while transcription is running now continues transcription automatically after the backend capture restart.
+- Internal:
+  - Added frontend `ui-preferences.v1` localStorage persistence and state hydration for desk controls.
+  - Audio/model selection reconciliation now keeps user-selected values when still valid and syncs them back to backend source/mode state.
+  - Updated model list handling to preserve the selected model when still available.
+- How to test:
+  - `cd frontend && npm run build`
+  - Launch app, set mode/source/model/preset/custom instruction and screenshot toggle, restart app, and confirm values are preserved.
+  - Start transcription and click `Switch to ...`; confirm mode changes and transcript continues updating.
+
+## 2026-02-24 (transcript selection single-line normalization)
+- User-visible:
+  - Multi-row transcript selections now paste into selected text as one line, with spaces between rows (no per-row line breaks).
+- Internal:
+  - Selection extraction now inserts row-boundary spaces and normalizes any line feeds to single spaces.
+- How to test:
+  - `cd frontend && npm run build`
+  - Start the app, select text across several transcript rows, and verify selected text is single-line with readable spaces between row boundaries.
+
+## 2026-02-24 (transcript selection row-spacing fix)
+- User-visible:
+  - Selecting multiple transcript rows now keeps readable separation between rows instead of collapsing adjacent lines together.
+- Internal:
+  - Frontend selection extraction now injects row separators before text normalization, preventing `textContent` row-boundary collapse.
+  - Selection fallback cleanup now also removes `SYS` and `MIC` source tags when present in raw selection text.
+- How to test:
+  - `cd frontend && npm run build`
+  - Start the app, select text spanning 2+ transcript rows, and verify selected text includes spacing/newline boundaries (for example no `...?next...` concatenation).
+
 ## 2026-02-23 (production launcher script)
 - User-visible:
   - Added `scripts/prod.sh` with `start|stop|restart|status|logs` for a production-style run (backend + built Electron frontend).

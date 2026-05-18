@@ -17,6 +17,7 @@ from .audio_capture import AudioCapture, discover_audio_sources
 from .benchmark_harness import BENCHMARK_HARNESS_PROMPT, build_benchmark_case_input
 from .model_pricing import estimate_cost_usd
 from .openai_client import OpenAIClient, preset_by_id
+from .rag_store import LocalRagStore
 from .settings import Settings
 from .stt import Segment, StreamingTranscriber
 from .transcript import SelectionRange, TranscriptStore
@@ -52,6 +53,11 @@ class AppController:
         self._query_request_id: Optional[str] = None
         self._stop_event = asyncio.Event()
         self._openai_client: Optional[OpenAIClient] = None
+        self._rag_store = LocalRagStore(
+            db_path=self.settings.rag_db_path,
+            chunk_size_chars=self.settings.rag_chunk_size_chars,
+            chunk_overlap_chars=self.settings.rag_chunk_overlap_chars,
+        )
         self._active_stream_kind = "system"
         self._active_source_name: Optional[str] = None
 
@@ -62,6 +68,33 @@ class AppController:
             return "mic"
         return "system"
 
+    @staticmethod
+    def _normalize_language(value: Optional[str]) -> Optional[str]:
+        normalized = (value or "").strip().lower()
+        return normalized or None
+
+    def _language_for_mode(self, mode: str) -> Optional[str]:
+        normalized_mode = self._normalize_audio_mode(mode)
+        global_language = self._normalize_language(self.settings.stt_language)
+        system_language = self._normalize_language(self.settings.stt_system_language)
+        mic_language = self._normalize_language(self.settings.stt_mic_language)
+        if normalized_mode == "mic":
+            return mic_language or global_language
+        return system_language or global_language
+
+    @staticmethod
+    def _resolve_source(
+        current_value: Optional[str],
+        available_sources: list[str],
+        *fallbacks: Optional[str],
+    ) -> Optional[str]:
+        if current_value and current_value in available_sources:
+            return current_value
+        for candidate in fallbacks:
+            if candidate and candidate in available_sources:
+                return candidate
+        return available_sources[0] if available_sources else None
+
     async def _restart_transcription_if_running(self) -> None:
         if not self.state.running:
             return
@@ -71,6 +104,7 @@ class AppController:
     async def start(self) -> None:
         await self.hub.start()
         await self._broadcast_audio_sources()
+        await self._broadcast_rag_documents()
         await self.hub.broadcast("status", {"state": "ready", "details": "WebSocket ready"})
 
     async def stop(self) -> None:
@@ -81,6 +115,7 @@ class AppController:
         await self.hub.stop()
         if self._openai_client:
             await self._openai_client.close()
+        self._rag_store.close()
 
     async def _handle_message(self, data: dict) -> None:
         msg_type = data.get("type")
@@ -121,15 +156,97 @@ class AppController:
         elif msg_type == "clear_transcript":
             self.transcript = TranscriptStore()
             await self.hub.broadcast("status", {"state": "cleared", "details": "Transcript cleared"})
+        elif msg_type == "rag_ingest":
+            await self.rag_ingest(data)
+        elif msg_type == "rag_list":
+            await self._broadcast_rag_documents()
+        elif msg_type == "rag_clear":
+            await self.rag_clear()
+
+    async def _ensure_openai_client(self) -> Optional[OpenAIClient]:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        if not self._openai_client:
+            self._openai_client = OpenAIClient(
+                api_key=api_key,
+                model=self.settings.openai_model,
+                timeout_seconds=self.settings.openai_timeout_seconds,
+            )
+        return self._openai_client
+
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        client = await self._ensure_openai_client()
+        if not client:
+            raise RuntimeError("OPENAI_API_KEY is required for RAG embeddings.")
+        return await client.embed_texts(texts, model=self.settings.rag_embedding_model)
+
+    async def _broadcast_rag_documents(self) -> None:
+        docs = self._rag_store.list_documents()
+        await self.hub.broadcast(
+            "rag_documents",
+            {
+                "documents": [
+                    {
+                        "docId": doc.doc_id,
+                        "filePath": doc.file_path,
+                        "title": doc.title,
+                        "chunkCount": doc.chunk_count,
+                        "updatedAt": doc.updated_at,
+                    }
+                    for doc in docs
+                ]
+            },
+        )
+
+    async def rag_ingest(self, data: dict) -> None:
+        raw_paths = data.get("paths")
+        if not isinstance(raw_paths, list):
+            await self.hub.broadcast("error", {"message": "rag_ingest requires a paths array."})
+            return
+        if not raw_paths:
+            await self.hub.broadcast("error", {"message": "rag_ingest received an empty paths array."})
+            return
+        try:
+            report = await self._rag_store.ingest_paths(raw_paths, embed_texts=self._embed_texts)
+        except Exception as exc:
+            await self.hub.broadcast("error", {"message": f"RAG ingestion failed: {exc}"})
+            return
+        await self.hub.broadcast(
+            "rag_ingest_result",
+            {
+                "ingested": report.ingested,
+                "updated": report.updated,
+                "skipped": report.skipped,
+                "failed": report.failed,
+                "errors": report.errors,
+            },
+        )
+        await self._broadcast_rag_documents()
+
+    async def rag_clear(self) -> None:
+        self._rag_store.clear()
+        await self.hub.broadcast("rag_ingest_result", {"ingested": 0, "updated": 0, "skipped": 0, "failed": 0, "errors": []})
+        await self._broadcast_rag_documents()
 
     async def _broadcast_audio_sources(self) -> None:
         sources = discover_audio_sources()
-        selected_monitor_source = (
-            self.state.monitor_source or self.settings.audio_source or sources.preferred_monitor
+        selected_monitor_source = self._resolve_source(
+            self.state.monitor_source,
+            sources.monitor_sources,
+            self.settings.audio_source,
+            sources.preferred_monitor,
+            sources.default_monitor,
         )
-        selected_mic_source = (
-            self.state.mic_source or self.settings.audio_mic_source or sources.preferred_mic
+        selected_mic_source = self._resolve_source(
+            self.state.mic_source,
+            sources.mic_sources,
+            self.settings.audio_mic_source,
+            sources.preferred_mic,
+            sources.default_source,
         )
+        self.state.monitor_source = selected_monitor_source
+        self.state.mic_source = selected_mic_source
         selected_mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
         await self._ensure_meter_loop("system", selected_monitor_source)
         await self._ensure_meter_loop("mic", selected_mic_source)
@@ -269,18 +386,12 @@ class AppController:
             await self.hub.broadcast("error", {"message": f"Audio meter loop ({stream_kind}) error: {exc}"})
 
     async def _broadcast_models(self) -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        client = await self._ensure_openai_client()
+        if not client:
             await self.hub.broadcast("models_list", {"models": [], "selectedModel": self.settings.openai_model})
             return
-        if not self._openai_client:
-            self._openai_client = OpenAIClient(
-                api_key=api_key,
-                model=self.settings.openai_model,
-                timeout_seconds=self.settings.openai_timeout_seconds,
-            )
         try:
-            models = await self._openai_client.list_models()
+            models = await client.list_models()
         except Exception:
             models = [self.settings.openai_model]
         if self.settings.openai_model and self.settings.openai_model not in models:
@@ -288,18 +399,12 @@ class AppController:
         await self.hub.broadcast("models_list", {"models": models, "selectedModel": self.settings.openai_model})
 
     async def _broadcast_model_details(self) -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        client = await self._ensure_openai_client()
+        if not client:
             await self.hub.broadcast("models_details", {"models": []})
             return
-        if not self._openai_client:
-            self._openai_client = OpenAIClient(
-                api_key=api_key,
-                model=self.settings.openai_model,
-                timeout_seconds=self.settings.openai_timeout_seconds,
-            )
         try:
-            models = await self._openai_client.list_model_details()
+            models = await client.list_model_details()
         except Exception:
             models = []
         await self.hub.broadcast("models_details", {"models": models})
@@ -309,8 +414,22 @@ class AppController:
             return
         sources = discover_audio_sources()
         mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
-        monitor_source = self.state.monitor_source or self.settings.audio_source or sources.preferred_monitor
-        mic_source = self.state.mic_source or self.settings.audio_mic_source or sources.preferred_mic
+        monitor_source = self._resolve_source(
+            self.state.monitor_source,
+            sources.monitor_sources,
+            self.settings.audio_source,
+            sources.preferred_monitor,
+            sources.default_monitor,
+        )
+        mic_source = self._resolve_source(
+            self.state.mic_source,
+            sources.mic_sources,
+            self.settings.audio_mic_source,
+            sources.preferred_mic,
+            sources.default_source,
+        )
+        self.state.monitor_source = monitor_source
+        self.state.mic_source = mic_source
         chosen = mic_source if mode == "mic" else monitor_source
         if not chosen:
             available_sources = sources.mic_sources if mode == "mic" else sources.monitor_sources
@@ -327,6 +446,7 @@ class AppController:
             )
             return
         self.state.audio_mode = mode
+        language_hint = self._language_for_mode(mode)
         self._capture = AudioCapture(chosen, self.settings.chunk_bytes)
         try:
             await self._capture.start()
@@ -340,6 +460,9 @@ class AppController:
                 device=self.settings.stt_device,
                 compute_type=self.settings.stt_compute_type,
                 vad_filter=self.settings.stt_vad_filter,
+                language=language_hint,
+                min_decode_rms=self.settings.stt_min_decode_rms,
+                no_vad_fallback_min_rms=self.settings.stt_no_vad_fallback_min_rms,
                 partial_window=self.settings.partial_window_seconds,
                 partial_interval=self.settings.partial_interval_seconds,
                 final_window=self.settings.final_window_seconds,
@@ -356,6 +479,7 @@ class AppController:
                     self._capture = None
                 await self.hub.broadcast("error", {"message": f"Failed to load model: {exc}"})
                 return
+        self._transcriber.set_language(language_hint)
         self._transcriber.reset_state()
         self._active_stream_kind = mode
         self._active_source_name = chosen
@@ -364,7 +488,11 @@ class AppController:
         self._stt_task = asyncio.create_task(self._stt_loop())
         self.state.running = True
         source_kind = "microphone" if mode == "mic" else "system audio"
-        await self.hub.broadcast("status", {"state": "transcribing", "details": f"Using {source_kind}: {chosen}"})
+        language_details = language_hint or "auto"
+        await self.hub.broadcast(
+            "status",
+            {"state": "transcribing", "details": f"Using {source_kind}: {chosen} (language: {language_details})"},
+        )
         await self._broadcast_audio_sources()
 
     async def stop_transcription(self, emit_status: bool = True) -> None:
@@ -481,22 +609,39 @@ class AppController:
                 before_seconds=self.settings.context_before_seconds,
                 after_seconds=self.settings.context_after_seconds,
             )
+            rag_query_text = "\n".join(
+                item for item in [selected_text, custom_instruction, context_text] if item
+            ).strip()
+            rag_chunks = []
+            if rag_query_text:
+                try:
+                    rag_chunks = await self._rag_store.search(
+                        rag_query_text,
+                        top_k=self.settings.rag_top_k,
+                        embed_texts=self._embed_texts,
+                    )
+                except Exception as exc:
+                    await self.hub.broadcast("error", {"message": f"RAG retrieval skipped: {exc}"})
+                    rag_chunks = []
+            rag_context = "\n\n".join(
+                f"[{index + 1}] {chunk.title} (score={chunk.score:.3f})\n{chunk.text}"
+                for index, chunk in enumerate(rag_chunks)
+            )
+            if rag_context:
+                context_text = (
+                    f"{context_text}\n\n"
+                    f"Document context (retrieved from local RAG store):\n{rag_context}"
+                ).strip()
 
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
+            client = await self._ensure_openai_client()
+            if not client:
                 await self.hub.broadcast("error", {"message": "OPENAI_API_KEY is missing."})
                 return
-            if not self._openai_client:
-                self._openai_client = OpenAIClient(
-                    api_key=api_key,
-                    model=self.settings.openai_model,
-                    timeout_seconds=self.settings.openai_timeout_seconds,
-                )
 
             query_started = True
             await self.hub.broadcast("query_state", {"running": True, "requestId": request_id})
             try:
-                result = await self._openai_client.run_query(
+                result = await client.run_query(
                     instruction=instruction,
                     selected_text=selected_text,
                     context_text=context_text,
@@ -522,6 +667,8 @@ class AppController:
                     "latencyMs": result.latency_ms,
                     "model": requested_model,
                     "screenshotUsed": bool(screenshot_data_url),
+                    "ragChunksUsed": len(rag_chunks),
+                    "ragSources": sorted({chunk.file_path for chunk in rag_chunks}),
                 },
             )
         except asyncio.CancelledError:

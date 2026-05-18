@@ -16,6 +16,19 @@ cd backend
 python -m app.main
 ```
 
+## Webcam eye-tracking prototype (mock)
+```bash
+cd backend
+python -m app.eye_tracking_prototype
+```
+
+Options:
+- `--camera-index` (default `0`)
+- `--width` / `--height` capture resolution
+- `--no-mirror` to disable mirror preview
+
+The prototype shows a live webcam overlay with coarse gaze direction labels (`left/right/up/down/center`, including diagonals).
+
 ## Configuration
 - `OPENAI_API_KEY` must be set in the environment or a `.env` file in `backend/`.
 - Optional overrides in `.env`:
@@ -24,8 +37,17 @@ python -m app.main
   - `AUDIO_MIC_SOURCE` (exact Pulse/PipeWire source name to force microphone capture)
   - `AUDIO_MODE` (`system` or `mic`, default `system`)
   - `STT_MODEL` (e.g. `base`, `small`)
-  - `STT_DEVICE` (`cpu` or `cuda`), `STT_COMPUTE_TYPE` (`int8` for CPU)
+  - `STT_DEVICE` (`cpu` default, or `cuda` when the CUDA runtime is installed), `STT_COMPUTE_TYPE` (`int8` for CPU, `float16` for CUDA)
   - `STT_VAD_FILTER` (`false` default; set `true` to suppress non-speech background)
+  - `STT_MIC_LANGUAGE` (default `en`; stabilizes mic transcription for accented English)
+  - `STT_SYSTEM_LANGUAGE` (default auto-detect for system audio)
+  - `STT_LANGUAGE` (global fallback when mode-specific language is unset)
+  - `STT_MIN_DECODE_RMS` (default `0.0010`; skips decoding on near-silent windows to reduce hallucinations)
+  - `STT_NO_VAD_FALLBACK_MIN_RMS` (default `0.0025`; blocks no-VAD fallback on very low-energy windows)
+  - `RAG_DB_PATH` (SQLite path for local vector DB, default `backend/data/rag.sqlite`)
+  - `RAG_EMBEDDING_MODEL` (default `text-embedding-3-small`)
+  - `RAG_TOP_K` (number of retrieved chunks injected into each query context)
+  - `RAG_CHUNK_SIZE_CHARS`, `RAG_CHUNK_OVERLAP_CHARS` (ingest chunking strategy)
 
 ## Audio Notes (Ubuntu)
 - Requires PulseAudio or PipeWire with Pulse shim.
@@ -36,3 +58,14 @@ python -m app.main
   3. Active browser/media sink input monitor (for system mode)
   4. Default sink monitor and default source from `pactl info`
 - If no monitor/mic sources are found, select one manually in the UI or pass it via WebSocket.
+
+## Local RAG ingestion
+- In Settings, use **Local RAG Documents** to ingest file/folder paths.
+- Supported formats: `.txt`, `.md`, `.pdf`, `.docx`.
+- RAG control messages:
+  - `rag_ingest`: `{ paths: string[] }`
+  - `rag_list`: `{}`
+  - `rag_clear`: `{}`
+- Backend emits:
+  - `rag_documents`: indexed document list with chunk counts and timestamps.
+  - `rag_ingest_result`: ingestion counters + error list.

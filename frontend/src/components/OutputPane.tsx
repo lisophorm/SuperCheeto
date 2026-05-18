@@ -14,6 +14,8 @@ type Props = {
   screenshotUsed: boolean
   selectedTextDraft: string
   onSelectedTextDraftChange: (value: string) => void
+  onAnswer: () => void
+  canAnswer: boolean
   onResetSelectedTextDraft: () => void
   canResetSelectedTextDraft: boolean
   collapsedRows: number
@@ -34,6 +36,8 @@ const OutputPane: React.FC<Props> = ({
   screenshotUsed,
   selectedTextDraft,
   onSelectedTextDraftChange,
+  onAnswer,
+  canAnswer,
   onResetSelectedTextDraft,
   canResetSelectedTextDraft,
   collapsedRows,
@@ -75,9 +79,14 @@ const OutputPane: React.FC<Props> = ({
         <div className="input-wrap selected-text-editor">
           <div className="selected-text-editor-header">
             <label>Selected text to send (editable)</label>
-            <button className="ghost" onClick={onResetSelectedTextDraft} disabled={!canResetSelectedTextDraft}>
-              Reset to selection
-            </button>
+            <div className="selected-text-editor-actions">
+              <button className="primary" onClick={onAnswer} disabled={!canAnswer || isQuerying}>
+                Answer
+              </button>
+              <button className="ghost" onClick={onResetSelectedTextDraft} disabled={!canResetSelectedTextDraft}>
+                Reset to selection
+              </button>
+            </div>
           </div>
           <textarea
             value={selectedTextDraft}

@@ -26,7 +26,23 @@ type WSHandlers = {
   onModelsDetails: (payload: { models: Array<{ id: string; object: string; created: number | null; owned_by: string }> }) => void
   onQueryState: (payload: { running: boolean; requestId?: string; cancelled?: boolean }) => void
   onQueryChunk: (payload: { requestId?: string; delta?: string }) => void
-  onQueryResponse: (payload: { requestId?: string; text: string; latencyMs?: number; model?: string; screenshotUsed?: boolean }) => void
+  onQueryResponse: (payload: {
+    requestId?: string
+    text: string
+    latencyMs?: number
+    model?: string
+    screenshotUsed?: boolean
+    ragChunksUsed?: number
+    ragSources?: string[]
+  }) => void
+  onRagDocuments: (payload: { documents: Array<{ docId: string; filePath: string; title: string; chunkCount: number; updatedAt: number }> }) => void
+  onRagIngestResult: (payload: {
+    ingested: number
+    updated: number
+    skipped: number
+    failed: number
+    errors?: string[]
+  }) => void
   onBenchmarkProgress: (payload: {
     benchmarkId?: string
     completed: number
@@ -128,6 +144,12 @@ export class WSClient {
             break
           case 'query_response':
             this.handlers.onQueryResponse(data)
+            break
+          case 'rag_documents':
+            this.handlers.onRagDocuments(data)
+            break
+          case 'rag_ingest_result':
+            this.handlers.onRagIngestResult(data)
             break
           case 'benchmark_progress':
             this.handlers.onBenchmarkProgress(data)

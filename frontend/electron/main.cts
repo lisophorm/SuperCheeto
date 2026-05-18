@@ -1,5 +1,33 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, desktopCapturer, ipcMain, screen, session } from 'electron'
 import path from 'path'
+
+const isDev = () => Boolean(process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development')
+
+const buildContentSecurityPolicy = () =>
+  [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' ws: wss: http: https:",
+    "media-src 'self' data: blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ')
+
+const installContentSecurityPolicy = () => {
+  if (isDev()) {
+    return
+  }
+  const contentSecurityPolicy = buildContentSecurityPolicy()
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const responseHeaders = details.responseHeaders || {}
+    responseHeaders['Content-Security-Policy'] = [contentSecurityPolicy]
+    callback({ responseHeaders })
+  })
+}
 
 const createWindow = () => {
   const win = new BrowserWindow({
@@ -14,7 +42,7 @@ const createWindow = () => {
   })
 
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173'
-  if (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development') {
+  if (isDev()) {
     win.loadURL(devUrl)
     win.webContents.openDevTools({ mode: 'detach' })
   } else {
@@ -37,6 +65,7 @@ ipcMain.handle('capture-screen', async () => {
 })
 
 app.whenReady().then(() => {
+  installContentSecurityPolicy()
   createWindow()
 
   app.on('activate', () => {

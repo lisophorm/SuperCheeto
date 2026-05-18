@@ -44,9 +44,34 @@ body {
   border-radius: 18px;
   padding: 18px 20px;
   box-shadow: var(--shadow);
+}
+
+.prompt-sections {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.prompt-panel {
+  width: 100%;
+  border: 1px solid rgba(224, 217, 201, 0.9);
+  border-radius: 16px;
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.96) 0%, rgba(247, 244, 236, 0.9) 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.prompt-panel-header h2 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.prompt-panel-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .prompt-controls {
@@ -54,6 +79,10 @@ body {
   flex-wrap: wrap;
   gap: 12px;
   align-items: flex-end;
+}
+
+.prompt-ai-instruction {
+  flex: 1 1 320px;
 }
 
 .status-pill {
@@ -100,6 +129,23 @@ body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.75rem;
   color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c64736;
+  opacity: 0.2;
+  flex: 0 0 auto;
+}
+
+.recording-dot.active {
+  opacity: 1;
+  animation: recordingBlink 1s steps(2, end) infinite;
 }
 
 .select-wrap,
@@ -358,6 +404,14 @@ button:disabled {
   gap: 10px;
 }
 
+.selected-text-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .selected-text-editor textarea {
   width: 100%;
   min-width: 100%;
@@ -572,6 +626,7 @@ button.overlay-trash {
   white-space: pre-wrap;
   font-family: 'JetBrains Mono', monospace;
   line-height: 1.5;
+  font-size: 0.6rem;
 }
 
 .selection {
@@ -616,6 +671,18 @@ button.overlay-trash {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes recordingBlink {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+  100% {
+    opacity: 1;
   }
 }
 

@@ -4,7 +4,7 @@ import json
 import inspect
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 import httpx
 
@@ -218,6 +218,29 @@ class OpenAIClient:
             )
         details.sort(key=lambda row: row["id"])
         return details
+
+    async def embed_texts(self, texts: Sequence[str], model: str = "text-embedding-3-small") -> List[List[float]]:
+        cleaned = [str(text or "").strip() for text in texts if str(text or "").strip()]
+        if not cleaned:
+            return []
+        response = await self._client.post(
+            "/embeddings",
+            json={
+                "model": model,
+                "input": cleaned,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("data", [])
+        vectors: List[List[float]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            embedding = row.get("embedding")
+            if isinstance(embedding, list) and embedding:
+                vectors.append([float(item) for item in embedding])
+        return vectors
 
     @staticmethod
     def _build_prompt(selected_text: str, context_text: str) -> str:

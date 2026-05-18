@@ -5,7 +5,8 @@ import {
   BenchmarkLiveLog,
   BenchmarkProgress,
   BenchmarkRun,
-  OpenAIModelInfo
+  OpenAIModelInfo,
+  RagDocument
 } from '../types'
 
 type Props = {
@@ -23,6 +24,11 @@ type Props = {
   onUpsertBenchmarkImage: (image: BenchmarkImageAsset) => void
   onDeleteBenchmarkImage: (refId: string) => void
   onClearBenchmarkHistory: () => void
+  ragDocuments: RagDocument[]
+  ragNotice: string
+  onRagIngest: (paths: string[]) => void
+  onRagRefresh: () => void
+  onRagClear: () => void
 }
 
 const DEFAULT_BENCHMARK_INSTRUCTION = `You are BenchmarkBot. Your job is to complete the given test as accurately as possible while following the required output format.
@@ -202,7 +208,12 @@ const SettingsPage: React.FC<Props> = ({
   benchmarkImages,
   onUpsertBenchmarkImage,
   onDeleteBenchmarkImage,
-  onClearBenchmarkHistory
+  onClearBenchmarkHistory,
+  ragDocuments,
+  ragNotice,
+  onRagIngest,
+  onRagRefresh,
+  onRagClear
 }) => {
   const [selectedModels, setSelectedModels] = useState<string[]>([])
   const [repeats, setRepeats] = useState(2)
@@ -219,6 +230,7 @@ const SettingsPage: React.FC<Props> = ({
   const [draftImageRef, setDraftImageRef] = useState('')
   const [draftUserPrompt, setDraftUserPrompt] = useState('')
   const [testError, setTestError] = useState('')
+  const [ragPathInput, setRagPathInput] = useState('')
 
   const availableModels = useMemo(() => {
     if (modelDetails.length > 0) {
@@ -519,6 +531,61 @@ const SettingsPage: React.FC<Props> = ({
               <span>Send captured screenshot with query when available</span>
             </label>
             <p className="muted">When disabled, screenshot stays local and is never sent to OpenAI.</p>
+            <hr />
+            <h3>Local RAG Documents</h3>
+            <p className="muted">
+              Ingest one or more absolute paths (files or folders). Supported: `.txt`, `.md`, `.pdf`, `.docx`.
+            </p>
+            <div className="input-wrap">
+              <label>Paths (comma-separated)</label>
+              <textarea
+                rows={3}
+                value={ragPathInput}
+                onChange={(event) => setRagPathInput(event.target.value)}
+                placeholder="/home/you/Documents/CV.pdf, /home/you/Documents/notes/"
+              />
+            </div>
+            <div className="benchmark-test-actions">
+              <button
+                className="ghost"
+                onClick={() => {
+                  const paths = ragPathInput
+                    .split(',')
+                    .map((item) => item.trim())
+                    .filter(Boolean)
+                  onRagIngest(paths)
+                }}
+              >
+                Ingest
+              </button>
+              <button className="ghost" onClick={onRagRefresh}>Refresh list</button>
+              <button className="ghost danger" onClick={onRagClear}>Clear RAG DB</button>
+            </div>
+            {ragNotice ? <p className="muted">{ragNotice}</p> : null}
+            {ragDocuments.length > 0 ? (
+              <table className="settings-table compact">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Chunks</th>
+                    <th>Updated</th>
+                    <th>Path</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ragDocuments.map((doc) => (
+                    <tr key={doc.docId}>
+                      <td>{doc.title}</td>
+                      <td>{doc.chunkCount}</td>
+                      <td>{new Date(doc.updatedAt * 1000).toLocaleString()}</td>
+                      <td title={doc.filePath}>{truncatePreview(doc.filePath, 100)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted">No RAG documents indexed yet.</p>
+            )}
           </div>
         </section>
 

@@ -96,9 +96,14 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
     const wrapper = document.createElement('div')
     wrapper.appendChild(fragment)
     wrapper.querySelectorAll('.time, .label, .source-tag').forEach((element) => element.remove())
+    // `textContent` does not preserve block boundaries, so selected rows can collapse.
+    wrapper.querySelectorAll<HTMLElement>('.transcript-row, .live-line').forEach((row) => {
+      row.appendChild(document.createTextNode(' '))
+    })
     const cleaned = (wrapper.textContent || '')
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{2,}/g, '\n')
+      .replace(/\s*\n+\s*/g, ' ')
       .replace(/[ \t]{2,}/g, ' ')
       .trim()
     if (cleaned) {
@@ -107,6 +112,8 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
     return (selection.toString() || '')
       .replace(/\b\d+:\d{2}\b/g, '')
       .replace(/\bLIVE\b/g, '')
+      .replace(/\b(?:SYS|MIC)\b/g, '')
+      .replace(/\s*\n+\s*/g, ' ')
       .replace(/[ \t]{2,}/g, ' ')
       .trim()
   }

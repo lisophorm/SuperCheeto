@@ -3,6 +3,11 @@
 ## What works end-to-end
 - Backend service runs via `python -m app.main` and serves WebSocket on `ws://127.0.0.1:8765`.
 - Frontend Electron app connects to backend and supports transcript selection + prompt execution.
+- STT now defaults to CPU-safe settings for local runs, so machines without CUDA libraries do not fail trying to load `libcublas`.
+- The desk header is split into stacked vertical `Audio` and `AI` blocks, and the inline `Answer` action prefers the custom instruction when one is present.
+- The desk layout now renders `Response` on the left and `Transcript` on the right.
+- Electron renderer now skips CSP in local Vite dev to avoid black-screen/preamble failures, while packaged loads keep the stricter production CSP (still no `unsafe-eval`).
+- Production Electron renderer now loads built assets via relative paths (`./assets/...`) so `scripts/prod.sh start` does not hit a blank window from `file:///assets/...` lookups.
 - Local audio capture + streaming transcription pipeline is wired through backend modules.
 - Root launcher script `scripts/dev.sh` can start/stop/restart/status/logs for backend and frontend together, and now force-cleans lingering backend listeners and frontend dev processes when PID files are missing.
 - Added `scripts/prod.sh` to run backend + production Electron frontend (no Vite/watch), with start/stop/restart/status/logs helpers.
@@ -18,7 +23,17 @@
 - Response pane now includes an editable pre-send selected-text textarea that expands on focus (rows configurable via `frontend/.envb`).
 - Response pane pre-send textarea now includes a reset button ("Reset to selection") and transcript selection text now strips time/LIVE labels.
 - Prompt bar now supports dual input modes (system monitor vs microphone), separate source dropdowns, and separate audio meters.
+- Desk preferences now persist across app restarts (input mode, selected sources, model, preset, custom instruction, and screenshot-toggle choice).
+- Prompt bar now includes a quick `Switch to ...` button next to `Start/Stop` to toggle mic/system input while transcription remains active.
+- Active input meter now shows a blinking red dot while transcription is running.
+- Manual edits in "Selected text to send" are now protected from duplicate transcript selection events, preventing stale selection text from overwriting user-typed prompt context.
+- Capturing a screenshot now auto-enables screenshot inclusion for queries so captured images are not silently excluded.
+- Response pane now includes an `Answer` button beside `Reset to selection` so preset answer runs are available next to the editable selected-text box.
+- Response output text size is reduced by 40% for denser answer display.
 - Transcript events now carry source metadata and microphone transcript rows render in a distinct text color.
+- Mic transcription now uses a configurable language hint (default `STT_MIC_LANGUAGE=en`) to avoid per-row language flips from accent-driven auto-detect.
+- STT now suppresses near-silence decoding (RMS gate + safer no-VAD fallback threshold) to reduce hallucinated rows like repeated "You" at zero audio.
+- `backend/.env.example` now includes STT language and silence-guard variables so tuning options are discoverable.
 - Audio level bars now update at higher frequency and use combined RMS/peak scaling for faster response to transients.
 - Audio meters are now always-on (even when transcription is stopped), enabling source troubleshooting before pressing Start.
 - Benchmark image uploader now refreshes immediately after upload/replace and uses larger previews.
@@ -26,18 +41,22 @@
 - Transcript pane now keeps LIVE at the bottom, appends new rows forward in time, and auto-scrolls to latest by default.
 - Transcript selection handling now tracks selection inside the transcript container via `selectionchange`, with more stable time-range extraction.
 - Transcript selection is now sticky (persists until explicitly cleared) and transcript row density is more compact (shorter line height/padding).
+- Transcript selection text now preserves spacing between selected rows while flattening to a single line (no collapsed sentence boundaries or per-row line feeds).
 - Transcript height now respects `VITE_MAX_ROWS` more directly (without oversized minimum), and transcript text now uses `Roboto Condensed` 600.
 - `Latest Result Per Model` now provides hover tooltips for headers (extended field descriptions) and data cells (column/value context).
 - `Live Runner Log` preview cells are truncated to 100 characters with full text on hover.
 - Query responses now stream live into the Response pane (`query_chunk`) with immediate partial text rendering.
 - Response pane now includes `Stop` (cancel in-flight query) and `Do it again` (rerun last query payload) controls.
+- Settings page now includes local RAG document ingestion (file/folder paths) with indexed-document listing and clear action.
+- Backend now persists RAG vectors/chunks in local SQLite (`backend/data/rag.sqlite`) and injects top-K retrieved chunks into query context.
+- Backend now includes a webcam eye-tracking prototype script (`python -m app.eye_tracking_prototype`) that estimates coarse gaze direction from MediaPipe iris landmarks.
 
 ## In progress
 - No active in-progress items tracked in repo docs.
 
 ## Next 3 priorities
-1. Add backend tests for benchmark scoring math (usage/cost/quality/modality aggregates).
-2. Add frontend tests for benchmark history + live log rendering with telemetry fields.
+1. Add backend tests for RAG ingestion/retrieval (chunking, hash-skip, cosine ranking).
+2. Add backend tests for benchmark scoring math (usage/cost/quality/modality aggregates).
 3. Add export/import JSON for benchmark history and image registry.
 
 ## Known issues / blockers
@@ -47,6 +66,10 @@
   - Paths: `scripts/dev.sh`, `frontend/package.json`.
 - Audio routing can still require manual monitor selection in Ubuntu audio stack.
   - Paths: `backend/app/audio_capture.py`, `backend/README.md`.
+- If your microphone speech language is not English, default `STT_MIC_LANGUAGE=en` can reduce accuracy until overridden.
+  - Paths: `backend/app/settings.py`, `backend/README.md`.
+- Persisted source names can become stale when audio devices change between launches; backend now auto-falls back to a valid available source at start.
+  - Paths: `backend/app/main.py`, `backend/app/audio_capture.py`.
 - Switching audio mode/source while already transcribing performs an automatic capture restart; this can reset in-flight live partial text.
   - Paths: `backend/app/main.py`, `backend/app/stt.py`.
 - Benchmark history currently lives in browser local storage only; there is no backend persistence/export yet.
@@ -55,10 +78,18 @@
   - Paths: `frontend/src/App.tsx`, `frontend/src/components/SettingsPage.tsx`.
 - Model pricing defaults can drift as OpenAI pricing changes; keep `OPENAI_MODEL_PRICING_JSON` up to date.
   - Paths: `backend/app/model_pricing.py`, `README.md`.
+- RAG embeddings currently rely on OpenAI embeddings API; if API key/network is unavailable, ingestion/retrieval is unavailable.
+  - Paths: `backend/app/rag_store.py`, `backend/app/openai_client.py`.
+- If `backend/.env.local` forces `STT_DEVICE=cuda` with a GPU-only model profile on a machine without CUDA libraries, transcription will still fail until those env overrides are changed.
+  - Paths: `backend/.env.local`, `backend/app/settings.py`.
+- Eye-tracking prototype depends on local webcam access and GUI display (OpenCV window); headless sessions will not render preview.
+  - Paths: `backend/app/eye_tracking_prototype.py`, `backend/requirements.txt`.
 
 ## Quick verify checklist
 1. Run `./scripts/dev.sh start`.
 2. Run `./scripts/dev.sh status` and confirm both services are running.
 3. Open the Electron UI and confirm backend connection state updates.
 4. In Settings, create multiple benchmark tests via CRUD, run a benchmark, and confirm history keeps prior runs.
-5. Run `./scripts/dev.sh stop` and confirm both services stop cleanly.
+5. In Settings, ingest a CV path in `Local RAG Documents`, run `Answer the question`, and verify response references retrieved document details.
+6. Run `./scripts/dev.sh stop` and confirm both services stop cleanly.
+7. Run `cd backend && python -m app.eye_tracking_prototype`, confirm webcam window opens and gaze label updates while moving eyes.

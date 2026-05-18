@@ -5,6 +5,30 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 const path_1 = __importDefault(require("path"));
+const isDev = () => Boolean(process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development');
+const buildContentSecurityPolicy = () => [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' ws: wss: http: https:",
+    "media-src 'self' data: blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'"
+].join('; ');
+const installContentSecurityPolicy = () => {
+    if (isDev()) {
+        return;
+    }
+    const contentSecurityPolicy = buildContentSecurityPolicy();
+    electron_1.session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        const responseHeaders = details.responseHeaders || {};
+        responseHeaders['Content-Security-Policy'] = [contentSecurityPolicy];
+        callback({ responseHeaders });
+    });
+};
 const createWindow = () => {
     const win = new electron_1.BrowserWindow({
         width: 1280,
@@ -17,7 +41,7 @@ const createWindow = () => {
         }
     });
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-    if (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === 'development') {
+    if (isDev()) {
         win.loadURL(devUrl);
         win.webContents.openDevTools({ mode: 'detach' });
     }
@@ -40,6 +64,7 @@ electron_1.ipcMain.handle('capture-screen', async () => {
     return `data:image/jpeg;base64,${jpeg.toString('base64')}`;
 });
 electron_1.app.whenReady().then(() => {
+    installContentSecurityPolicy();
     createWindow();
     electron_1.app.on('activate', () => {
         if (electron_1.BrowserWindow.getAllWindows().length === 0) {

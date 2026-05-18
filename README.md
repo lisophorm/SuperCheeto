@@ -71,6 +71,18 @@ python -m app.main
 
 Set `OPENAI_API_KEY` in `backend/.env` or the environment. Use `backend/.env.example` as a template.
 
+### Webcam eye-tracking prototype (mock)
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.eye_tracking_prototype
+```
+
+Notes:
+- Press `q` to close the webcam window.
+- The prototype emits coarse gaze classes (`left/right/up/down/center` plus diagonal variants) from iris landmarks.
+- If your webcam is not detected, try `python -m app.eye_tracking_prototype --camera-index 1`.
+
 ### Frontend
 ```bash
 cd frontend
@@ -83,6 +95,14 @@ npm run dev
 - The backend resolves default monitor/mic sources using `pactl info`.
 - If input routing is wrong, install and open `pavucontrol` (`sudo apt install -y pavucontrol`), then in the **Recording** tab set the backend (`python`) input to a `Monitor of ...` source.
 - If no monitor/mic sources are found, select one manually in the UI or send it over WebSocket.
+- Microphone transcription now defaults to English language hint (`STT_MIC_LANGUAGE=en`) to reduce accent-related auto-detection flips. If you primarily speak another language, set `STT_MIC_LANGUAGE` in `backend/.env` (for example `it`).
+- Optional language overrides:
+  - `STT_MIC_LANGUAGE` (default `en`)
+  - `STT_SYSTEM_LANGUAGE` (default auto-detect)
+  - `STT_LANGUAGE` (global fallback if per-mode values are unset)
+- Silence/hallucination guard tuning:
+  - `STT_MIN_DECODE_RMS` (default `0.0010`) skips STT decode on near-silent windows.
+  - `STT_NO_VAD_FALLBACK_MIN_RMS` (default `0.0025`) only allows no-VAD fallback when signal energy is high enough.
 
 ## WebSocket Messages
 Backend → Frontend:
@@ -93,7 +113,9 @@ Backend → Frontend:
 - `status`: `{ state, details }`
 - `query_state`: `{ running, requestId?, cancelled? }`
 - `query_chunk`: `{ requestId?, delta }` (streamed partial response text)
-- `query_response`: `{ requestId, text, latencyMs?, model?, screenshotUsed? }`
+- `query_response`: `{ requestId, text, latencyMs?, model?, screenshotUsed?, ragChunksUsed?, ragSources? }`
+- `rag_documents`: `{ documents: [{ docId, filePath, title, chunkCount, updatedAt }] }`
+- `rag_ingest_result`: `{ ingested, updated, skipped, failed, errors? }`
 - `error`: `{ message }`
 
 Frontend → Backend:
@@ -104,10 +126,19 @@ Frontend → Backend:
 - `stop_transcription`
 - `run_query`: `{ requestId, presetId|null, customInstruction|null, selectedText, selectionTimeRange|null }`
 - `cancel_query`: `{ requestId? }`
+- `rag_ingest`: `{ paths: string[] }` (absolute file/folder paths for `.txt/.md/.pdf/.docx`)
+- `rag_list`
+- `rag_clear`
 
 ## OpenAI
 - Set `OPENAI_API_KEY` before running.
 - Default model: `gpt-4o` (override with `OPENAI_MODEL`).
+- RAG uses OpenAI embeddings by default (`RAG_EMBEDDING_MODEL=text-embedding-3-small`) and stores vectors locally in SQLite (`RAG_DB_PATH`).
+
+## RAG document ingestion
+- Open **Settings** and use **Local RAG Documents**.
+- Paste one or more absolute paths (comma-separated), then click `Ingest`.
+- Ingested chunks are stored in local SQLite and retrieved automatically during `run_query`.
 
 ## Benchmarking (Settings page)
 - Manage tests with simple CRUD in Settings (create, edit, delete).
@@ -133,3 +164,4 @@ Frontend → Backend:
 2) If RMS stays near zero, open `pavucontrol` and route the backend recording stream to the intended monitor or microphone source.
 3) Launch the frontend and wait for the status pill to show `ready` or `transcribing`.
 4) Select text in the transcript pane, then run a preset prompt.
+docs/ingestion/alfonso_cv.md
