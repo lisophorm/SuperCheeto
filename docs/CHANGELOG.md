@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-05-18 (frontend live transcript duplicate fix)
+- User-visible:
+  - Removed accumulated live partial rows from the transcript history; the pane now shows final rows plus one current `LIVE` preview.
+  - Stopping or reconnecting clears stale live preview text.
+- Internal:
+  - Frontend keeps live partials out of the committed transcript row list.
+  - Backend no longer starts audio meter capture loops before transcription is running.
+- How to test:
+  - `cd frontend && npm run build`
+  - Open the app without pressing Start and confirm transcript text does not begin updating.
+  - Run transcription and confirm older live partial guesses do not accumulate as transcript rows.
+
+## 2026-05-18 (transcript duplicate suppression)
+- User-visible:
+  - Reworked final transcript emission to avoid both shifted-timestamp duplicates and missing finalized rows from rolling-window STT.
+  - Suppressed near-immediate repeated final transcript rows while preserving short repeated utterances.
+- Internal:
+  - STT finalization now diffs each rolling decoded final window against recently committed words and emits only the new suffix.
+  - `TranscriptStore.add_segment` now returns whether a segment was accepted and filters recent same-source duplicate text of at least three words before storage/broadcast.
+  - Added focused backend unit tests for STT final-text diffing and transcript duplicate suppression.
+- How to test:
+  - `cd backend && python -m unittest discover -s tests`
+  - `python -m compileall backend/app backend/tests`
+
+## 2026-05-18 (denser frontend spacing)
+- User-visible:
+  - Reduced the overall interface footprint by halving nonzero CSS padding values and lowering the root font size.
+- Internal:
+  - Centralized the text scale change through the root `html` font size in `frontend/src/styles.css`.
+- How to test:
+  - `cd frontend && npm run build`
+  - Open the Desk and Settings pages and confirm controls, tables, transcript rows, and response content render more compactly.
+
 ## 2026-03-10 (desk pane order: response left)
 - User-visible:
   - Swapped the main desk panes so `Response` appears on the left and `Transcript` on the right.

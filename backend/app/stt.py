@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Iterable, List, Optional
+from typing import Callable, Deque, List, Optional
 
 import numpy as np
 from faster_whisper import WhisperModel

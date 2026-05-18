@@ -6,9 +6,12 @@
 - STT now defaults to CPU-safe settings for local runs, so machines without CUDA libraries do not fail trying to load `libcublas`.
 - The desk header is split into stacked vertical `Audio` and `AI` blocks, and the inline `Answer` action prefers the custom instruction when one is present.
 - The desk layout now renders `Response` on the left and `Transcript` on the right.
+- Frontend UI density is tightened globally: nonzero padding values are halved and the root font scale is reduced.
 - Electron renderer now skips CSP in local Vite dev to avoid black-screen/preamble failures, while packaged loads keep the stricter production CSP (still no `unsafe-eval`).
 - Production Electron renderer now loads built assets via relative paths (`./assets/...`) so `scripts/prod.sh start` does not hit a blank window from `file:///assets/...` lookups.
 - Local audio capture + streaming transcription pipeline is wired through backend modules.
+- Transcript storage suppresses only near-immediate repeated final rows with at least three words, while preserving short repeated utterances.
+- STT finalization now diffs rolling-window decoded text against recently committed words and emits only the new suffix, avoiding shifted-timestamp duplicates and missing finalized rows.
 - Root launcher script `scripts/dev.sh` can start/stop/restart/status/logs for backend and frontend together, and now force-cleans lingering backend listeners and frontend dev processes when PID files are missing.
 - Added `scripts/prod.sh` to run backend + production Electron frontend (no Vite/watch), with start/stop/restart/status/logs helpers.
 - Benchmark runner now supports multi-test batches (`tests x models x repeats`) and keeps benchmark history in frontend local storage.
@@ -39,6 +42,7 @@
 - Benchmark image uploader now refreshes immediately after upload/replace and uses larger previews.
 - Benchmark image previews are now clickable to open a full-size modal.
 - Transcript pane now keeps LIVE at the bottom, appends new rows forward in time, and auto-scrolls to latest by default.
+- Transcript pane renders final transcript rows plus a single current `LIVE` preview; older live partials are no longer rendered as transcript rows.
 - Transcript selection handling now tracks selection inside the transcript container via `selectionchange`, with more stable time-range extraction.
 - Transcript selection is now sticky (persists until explicitly cleared) and transcript row density is more compact (shorter line height/padding).
 - Transcript selection text now preserves spacing between selected rows while flattening to a single line (no collapsed sentence boundaries or per-row line feeds).
@@ -93,3 +97,5 @@
 5. In Settings, ingest a CV path in `Local RAG Documents`, run `Answer the question`, and verify response references retrieved document details.
 6. Run `./scripts/dev.sh stop` and confirm both services stop cleanly.
 7. Run `cd backend && python -m app.eye_tracking_prototype`, confirm webcam window opens and gaze label updates while moving eyes.
+8. Run `cd frontend && npm run build` after UI styling changes.
+9. Run `cd backend && python -m unittest discover -s tests` after backend transcript changes.

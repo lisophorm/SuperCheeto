@@ -223,6 +223,11 @@ type LiveRow = {
   sourceName?: string | null
 }
 
+const normalizeTranscriptText = (text: string): string =>
+  (text.toLowerCase().match(/[a-z0-9']+/g) || []).join(' ')
+
+const wordCount = (normalizedText: string): number => (normalizedText ? normalizedText.split(' ').length : 0)
+
 type QueryRunPayload = {
   presetId: string | null
   customInstruction: string | null
@@ -303,6 +308,12 @@ const App: React.FC = () => {
           setIsRunning(true)
         } else if (payload.state === 'stopped') {
           setIsRunning(false)
+          setLiveText('')
+          setLiveRows([])
+        } else if (payload.state === 'ready' || payload.state === 'connected') {
+          setIsRunning(false)
+          setLiveText('')
+          setLiveRows([])
         }
         if (payload.state === 'connected') {
           client.send({ type: 'get_audio_sources' })
@@ -328,7 +339,28 @@ const App: React.FC = () => {
         })
       },
       onSegment: (payload) => {
-        setSegments((prev) => [...prev, payload.segment])
+        setLiveText('')
+        setLiveRows([])
+        setSegments((prev) => {
+          const incoming = payload.segment as TranscriptSegment
+          const incomingText = normalizeTranscriptText(incoming.text || '')
+          const incomingWordCount = wordCount(incomingText)
+          if (incomingText && incomingWordCount >= 3) {
+            const duplicate = [...prev].reverse().find((segment) => {
+              if ((segment.source_kind || 'system') !== (incoming.source_kind || 'system')) {
+                return false
+              }
+              if ((incoming.t0 - segment.t1) > 3) {
+                return false
+              }
+              return normalizeTranscriptText(segment.text || '') === incomingText
+            })
+            if (duplicate) {
+              return prev
+            }
+          }
+          return [...prev, incoming]
+        })
       },
       onAudioLevel: (payload) => {
         const streamKind: AudioStreamKind = payload.streamKind === 'mic' ? 'mic' : 'system'
@@ -679,6 +711,8 @@ const App: React.FC = () => {
   }
 
   const startTranscription = () => {
+    setLiveText('')
+    setLiveRows([])
     client.send({ type: 'set_audio_mode', mode: audioMode })
     if (selectedSystemAudioSource) {
       client.send({ type: 'set_audio_source', sourceName: selectedSystemAudioSource })
@@ -691,6 +725,8 @@ const App: React.FC = () => {
 
   const stopTranscription = () => {
     client.send({ type: 'stop_transcription' })
+    setLiveText('')
+    setLiveRows([])
     setSystemAudioLevel(0)
     setSystemAudioRms(0)
     setMicAudioLevel(0)

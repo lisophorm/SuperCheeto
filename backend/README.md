@@ -16,6 +16,12 @@ cd backend
 python -m app.main
 ```
 
+## Test
+```bash
+cd backend
+python -m unittest discover -s tests
+```
+
 ## Webcam eye-tracking prototype (mock)
 ```bash
 cd backend

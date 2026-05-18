@@ -248,8 +248,12 @@ class AppController:
         self.state.monitor_source = selected_monitor_source
         self.state.mic_source = selected_mic_source
         selected_mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
-        await self._ensure_meter_loop("system", selected_monitor_source)
-        await self._ensure_meter_loop("mic", selected_mic_source)
+        if self.state.running:
+            await self._ensure_meter_loop("system", selected_monitor_source)
+            await self._ensure_meter_loop("mic", selected_mic_source)
+        else:
+            await self._stop_meter_loop("system")
+            await self._stop_meter_loop("mic")
         await self.hub.broadcast(
             "audio_sources",
             {
@@ -412,6 +416,7 @@ class AppController:
     async def start_transcription(self) -> None:
         if self.state.running:
             return
+        self.state.running = True
         sources = discover_audio_sources()
         mode = self._normalize_audio_mode(self.state.audio_mode or self.settings.audio_mode)
         monitor_source = self._resolve_source(
@@ -444,6 +449,7 @@ class AppController:
                     "sources": available_sources,
                 },
             )
+            self.state.running = False
             return
         self.state.audio_mode = mode
         language_hint = self._language_for_mode(mode)
@@ -451,6 +457,7 @@ class AppController:
         try:
             await self._capture.start()
         except Exception as exc:
+            self.state.running = False
             await self.hub.broadcast("error", {"message": str(exc)})
             return
         if not self._transcriber:
@@ -477,6 +484,7 @@ class AppController:
                 if self._capture:
                     await self._capture.stop()
                     self._capture = None
+                self.state.running = False
                 await self.hub.broadcast("error", {"message": f"Failed to load model: {exc}"})
                 return
         self._transcriber.set_language(language_hint)
@@ -486,7 +494,6 @@ class AppController:
         self._stop_event.clear()
         self._audio_task = asyncio.create_task(self._audio_loop())
         self._stt_task = asyncio.create_task(self._stt_loop())
-        self.state.running = True
         source_kind = "microphone" if mode == "mic" else "system audio"
         language_details = language_hint or "auto"
         await self.hub.broadcast(
@@ -511,6 +518,8 @@ class AppController:
         self._capture = None
         self._active_source_name = None
         self.state.running = False
+        await self._stop_meter_loop("system")
+        await self._stop_meter_loop("mic")
         if emit_status:
             await self.hub.broadcast("status", {"state": "stopped", "details": "Transcription stopped"})
 
@@ -534,6 +543,8 @@ class AppController:
             await self.hub.broadcast("error", {"message": f"STT processing error: {exc}"})
 
     async def _on_live_text(self, text: str, timestamp: float) -> None:
+        if not self.state.running:
+            return
         await self.hub.broadcast(
             "transcript_live",
             {
@@ -545,9 +556,12 @@ class AppController:
         )
 
     async def _on_segment(self, segment: Segment) -> None:
+        if not self.state.running:
+            return
         segment.source_kind = self._active_stream_kind
         segment.source_name = self._active_source_name
-        self.transcript.add_segment(segment)
+        if not self.transcript.add_segment(segment):
+            return
         await self.hub.broadcast("transcript_segment", {"segment": segment.__dict__})
 
     async def run_query(self, data: dict) -> None:

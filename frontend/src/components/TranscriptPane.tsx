@@ -21,7 +21,6 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
   const [autoScrollPaused, setAutoScrollPaused] = useState(false)
   const orderedSegments = [...segments]
   const latestLiveRow = liveRows[liveRows.length - 1]
-  const olderLiveRows = latestLiveRow ? liveRows.slice(0, -1) : liveRows
   // Respect VITE_MAX_ROWS more directly for visible rows + a LIVE row.
   const rowHeightPx = 22
   const liveRowHeightPx = 30
@@ -182,18 +181,6 @@ const TranscriptPane: React.FC<Props> = ({ segments, liveText, liveRows, maxRows
             <span className="time">{formatTime(segment.t0)}</span>
             <span className="source-tag">{rowLabelForKind(segment.source_kind)}</span>
             <span className="text">{segment.text}</span>
-          </div>
-        ))}
-        {olderLiveRows.map((row) => (
-          <div
-            className={`segment transcript-row ${rowClassForKind(row.sourceKind)}`}
-            key={`live-${row.id}`}
-            data-t0={row.t}
-            data-t1={row.t}
-          >
-            <span className="time">{formatTime(row.t)}</span>
-            <span className="source-tag">{rowLabelForKind(row.sourceKind)}</span>
-            <span className="text">{row.text}</span>
           </div>
         ))}
         {!latestLiveRow ? (

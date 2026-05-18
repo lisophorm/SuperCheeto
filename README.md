@@ -71,6 +71,13 @@ python -m app.main
 
 Set `OPENAI_API_KEY` in `backend/.env` or the environment. Use `backend/.env.example` as a template.
 
+Backend tests:
+```bash
+cd backend
+source .venv/bin/activate
+python -m unittest discover -s tests
+```
+
 ### Webcam eye-tracking prototype (mock)
 ```bash
 cd backend
